@@ -7,7 +7,7 @@ import torchvision
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader, random_split
 
-from models import ConvNet
+from models import LeNetWide32, LeNet5
 from malicious_client import generate_malicious_update
 
 
@@ -40,7 +40,6 @@ def client_update(client_model, optimizer, train_loader, device, epochs=1):
 
 
 def trimmed_mean(client_models, benign_indices, trim_ratio=0.1):
-    # Coordinate-wise trimmed mean across kept benign models
     states = [client_models[i].state_dict() for i in benign_indices]
     n = len(states)
     if n <= 2:
@@ -67,7 +66,6 @@ def trimmed_mean(client_models, benign_indices, trim_ratio=0.1):
 
 
 def detect_and_aggregate(global_model, client_models, current_round):
-    # Full combined defense: NaN/Inf check + L2 norm + Cosine Consensus + Multi-Krum + Trimmed Mean
     global_dict = global_model.state_dict()
     num_clients = len(client_models)
 
@@ -113,15 +111,14 @@ def detect_and_aggregate(global_model, client_models, current_round):
                 sims.append(sim)
         cos_scores.append(sum(sims) / len(sims))
 
-    # 4. Multi-Krum scores (sum of Euclidean distances to closest n-f-2 neighbors)
-    f = 1  # 1 malicious client
+    # 4. Multi-Krum scores
+    f = 1
     keep_neighbors = max(1, num_clients - f - 2)
     krum_scores = []
     for i in range(num_clients):
         dists = sorted([(deltas[i] - deltas[j]).norm().item() for j in range(num_clients) if i != j])
         krum_scores.append(sum(dists[:keep_neighbors]))
 
-    # Anomaly scores (normalized [0, 1])
     def minmax(vals):
         lo, hi = min(vals), max(vals)
         if hi - lo < 1e-12:
@@ -132,12 +129,10 @@ def detect_and_aggregate(global_model, client_models, current_round):
     l2_anom = minmax([abs(nr - med_norm) / max(med_norm, 1e-12) for nr in norms])
     krum_anom = minmax(krum_scores)
 
-    # Combined anomaly score: highest of any outlier signal
     combined_scores = [max(c, l, k) for c, l, k in zip(cos_anom, l2_anom, krum_anom)]
 
     flagged_client = -1
     if current_round >= 2:
-        # Hard threshold rules (detect extreme magnitude / inverted direction instantly)
         hard_outliers = []
         for i in range(num_clients):
             if norms[i] > 3.0 * max(med_norm, 1e-12) or cos_scores[i] < 0.0:
@@ -147,19 +142,16 @@ def detect_and_aggregate(global_model, client_models, current_round):
             hard_outliers.sort(key=lambda idx: combined_scores[idx], reverse=True)
             flagged_client = hard_outliers[0]
         else:
-            # Pick client with highest combined anomaly score
             flagged_client = int(torch.tensor(combined_scores).argmax().item())
 
         print(f"  [Defense] Flagged malicious client: Client {flagged_client} (norm={norms[flagged_client]:.2f}, cos={cos_scores[flagged_client]:.4f})")
 
-    # Exclude flagged client and aggregate benign updates via Trimmed Mean
     benign_indices = [i for i in range(num_clients) if i != flagged_client]
     print(f"  [Server] Robust aggregation (Trimmed Mean) over {len(benign_indices)} benign clients...")
 
     new_global_dict = trimmed_mean(client_models, benign_indices, trim_ratio=0.1)
     global_model.load_state_dict(new_global_dict)
 
-    # Broadcast updated global parameters to all clients
     for client in client_models:
         client.load_state_dict(global_model.state_dict())
 
@@ -180,16 +172,16 @@ def test_model(model, test_loader, device):
 
 
 def main():
-    # Set seed for reproducible experiments
     torch.manual_seed(42)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
-    # Level 3 parameters: 10 clients (9 benign, 1 malicious), 10 rounds, 1 local epoch
+    # Model choice: "wide" (LeNetWide32, primary) or "lenet5" (baseline)
+    model_type = "wide"
     n_clients = 10
-    malicious_client_id = 9  # Designated malicious client
-    attack_start_round = 2   # Attack starts from round 2 onward
+    malicious_client_id = 9
+    attack_start_round = 2
     global_epochs = 10
     local_epochs = 1
     learning_rate = 0.0005
@@ -205,7 +197,12 @@ def main():
     client_loaders = [DataLoader(ds, batch_size=50, shuffle=True) for ds in client_datasets]
     test_loader = DataLoader(test_dataset, batch_size=1000, shuffle=False)
 
-    global_model = ConvNet().to(device)
+    if model_type == "lenet5":
+        global_model = LeNet5().to(device)
+    else:
+        global_model = LeNetWide32().to(device)
+
+    print(f"Level 3 training with model: {global_model.__class__.__name__}")
     client_models = [copy.deepcopy(global_model) for _ in range(n_clients)]
     optimizers = [torch.optim.Adam(m.parameters(), lr=learning_rate) for m in client_models]
 
@@ -216,7 +213,6 @@ def main():
     for round_num in range(1, global_epochs + 1):
         print(f"\nGlobal Round {round_num}/{global_epochs}")
 
-        # Client updates
         for idx in range(n_clients):
             if idx == malicious_client_id and round_num >= attack_start_round:
                 # === MALICIOUS CLIENT LOGIC HERE ===
@@ -229,7 +225,6 @@ def main():
             else:
                 client_update(client_models[idx], optimizers[idx], client_loaders[idx], device, local_epochs)
 
-        # Defense mechanism: multi-metric detection + trimmed mean aggregation
         detected_id = detect_and_aggregate(global_model, client_models, round_num)
 
         if round_num >= attack_start_round:
@@ -239,7 +234,6 @@ def main():
             else:
                 print(f"  [Result] Warning: Injected client was {malicious_client_id}, but flagged client was {detected_id}")
 
-        # Evaluation
         accuracy = test_model(global_model, test_loader, device)
         print(f"Global Model Test Accuracy after round {round_num}: {accuracy:.4f} ({accuracy:.2%})")
 

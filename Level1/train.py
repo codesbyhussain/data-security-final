@@ -7,7 +7,7 @@ import torchvision
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 
-from models import ConvNet
+from models import LeNetWide32, LeNet5
 
 
 def load_data(batch_size=50):
@@ -34,6 +34,8 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
+    # Model choice: "wide" (LeNetWide32, primary) or "lenet5" (baseline)
+    model_type = "wide"
     learning_rate = 0.0005
     epochs = 5
     batch_size = 50
@@ -41,7 +43,12 @@ def main():
 
     train_loader, test_loader = load_data(batch_size=batch_size)
 
-    model = ConvNet().to(device)
+    if model_type == "lenet5":
+        model = LeNet5().to(device)
+    else:
+        model = LeNetWide32().to(device)
+
+    print(f"Training model: {model.__class__.__name__}")
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 

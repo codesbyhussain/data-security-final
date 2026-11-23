@@ -7,7 +7,7 @@ import torchvision
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 
-from models import ConvNet
+from models import LeNetWide32, LeNet5
 
 
 def load_test_data():
@@ -24,6 +24,9 @@ def load_test_data():
 
 def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # Model choice: "wide" (LeNetWide32, primary) or "lenet5" (baseline)
+    model_type = "wide"
     checkpoint_path = "best_model.pth"
 
     if not os.path.exists(checkpoint_path):
@@ -32,7 +35,11 @@ def main():
 
     test_loader = load_test_data()
 
-    model = ConvNet().to(device)
+    if model_type == "lenet5":
+        model = LeNet5().to(device)
+    else:
+        model = LeNetWide32().to(device)
+
     model.load_state_dict(torch.load(checkpoint_path, map_location=device, weights_only=True))
     model.eval()
 
@@ -49,7 +56,7 @@ def main():
             total += test_labels.size(0)
 
     accuracy = correct / total
-    print(f"Test Accuracy: {accuracy:.2%} ({correct}/{total})")
+    print(f"Test Accuracy ({model.__class__.__name__}): {accuracy:.2%} ({correct}/{total})")
 
 
 if __name__ == "__main__":

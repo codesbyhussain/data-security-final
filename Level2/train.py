@@ -7,7 +7,7 @@ import torchvision
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader, random_split
 
-from models import ConvNet
+from models import LeNetWide32, LeNet5
 
 
 def load_data(transform):
@@ -39,7 +39,6 @@ def client_update(client_model, optimizer, train_loader, device, epochs=1):
 
 
 def server_aggregate(global_model, client_models):
-    # FedAvg: average weights across all client models
     global_dict = global_model.state_dict()
     for key in global_dict.keys():
         global_dict[key] = torch.stack(
@@ -47,7 +46,6 @@ def server_aggregate(global_model, client_models):
         ).mean(dim=0)
     global_model.load_state_dict(global_dict)
 
-    # Distribute updated global weights back to all clients
     for client in client_models:
         client.load_state_dict(global_model.state_dict())
 
@@ -69,7 +67,8 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
-    # Fixed project requirements: 10 clients, 10 rounds, 1 local epoch
+    # Model choice: "wide" (LeNetWide32, primary) or "lenet5" (baseline)
+    model_type = "wide"
     n_clients = 10
     global_epochs = 10
     local_epochs = 1
@@ -86,7 +85,12 @@ def main():
     client_loaders = [DataLoader(ds, batch_size=50, shuffle=True) for ds in client_datasets]
     test_loader = DataLoader(test_dataset, batch_size=1000, shuffle=False)
 
-    global_model = ConvNet().to(device)
+    if model_type == "lenet5":
+        global_model = LeNet5().to(device)
+    else:
+        global_model = LeNetWide32().to(device)
+
+    print(f"Federated training with: {global_model.__class__.__name__}")
     client_models = [copy.deepcopy(global_model) for _ in range(n_clients)]
     optimizers = [torch.optim.Adam(m.parameters(), lr=learning_rate) for m in client_models]
 
@@ -96,14 +100,11 @@ def main():
     for round_num in range(global_epochs):
         print(f"Global Round {round_num + 1}/{global_epochs}")
 
-        # Local training on each client
         for idx in range(n_clients):
             client_update(client_models[idx], optimizers[idx], client_loaders[idx], device, local_epochs)
 
-        # Server-side aggregation (FedAvg)
         server_aggregate(global_model, client_models)
 
-        # Evaluation on test dataset
         accuracy = test_model(global_model, test_loader, device)
         print(f"Round {round_num + 1} Global Test Accuracy: {accuracy:.4f} ({accuracy:.2%})")
 
