@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from models import LeNetWide32
+from models import LeNetWide32, LeNet5
 
 # Attack selection:
 # 'random' | 'sign_flip' | 'gaussian' | 'scale' | 'label_flip' | 'benign'
@@ -19,7 +19,12 @@ _ACTUAL_SILENT_ROUNDS = None
 
 
 def _get_local_trained_state(global_state, local_dataset, device, label_flip=False):
-    model = LeNetWide32().to(device)
+    # Detect whether global model is LeNet5 or LeNetWide32 from parameter shapes
+    if "fc1.weight" in global_state and global_state["fc1.weight"].shape[0] == 120:
+        model = LeNet5().to(device)
+    else:
+        model = LeNetWide32().to(device)
+
     model.load_state_dict(global_state)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.0005)
     loader = DataLoader(local_dataset, batch_size=50, shuffle=True)
