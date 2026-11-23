@@ -70,7 +70,7 @@ def detect_and_aggregate(global_model, client_models, current_round):
     global_dict = global_model.state_dict()
     num_clients = len(client_models)
 
-    # 0. Check for NaN / Inf injection attacks
+    # 0. DEFENSE A: Check for NaN / Inf injection attacks
     corrupted_clients = []
     for i, client in enumerate(client_models):
         for param in client.state_dict().values():
@@ -88,7 +88,7 @@ def detect_and_aggregate(global_model, client_models, current_round):
             client.load_state_dict(global_model.state_dict())
         return flagged_client
 
-    # 1. Update delta vectors (w_i - w_global)
+    # 1. GET DELTA VECTORS FOR DEFENSES: Update delta vectors (w_i - w_global)
     deltas = []
     for client in client_models:
         c_dict = client.state_dict()
@@ -97,55 +97,61 @@ def detect_and_aggregate(global_model, client_models, current_round):
             diffs.append((c_dict[k].float() - global_dict[k].float().to(c_dict[k].device)).reshape(-1))
         deltas.append(torch.cat(diffs))
 
-    # 2. L2 norms and median
+    # 2. DEFENSE B: L2 norms and median 
     norms = [torch.norm(d).item() for d in deltas]
-    sorted_norms = sorted(norms)
-    med_norm = sorted_norms[len(sorted_norms) // 2]
+    # sorted_norms = sorted(norms)
+    # med_norm = sorted_norms[len(sorted_norms) // 2]
+    med_norm = torch.tensor(norms).median().item()
 
-    # 3. Pairwise cosine consensus scores
+    # 3. DEFENSE C: Pairwise cosine consensus scores
     cos_scores = []
     for i in range(num_clients):
         sims = []
         for j in range(num_clients):
-            if i != j:
-                sim = torch.cosine_similarity(deltas[i].unsqueeze(0), deltas[j].unsqueeze(0)).item()
+            if i != j: # Only compare to other clients
+                sim = torch.cosine_similarity(deltas[i].unsqueeze(0), deltas[j].unsqueeze(0)).item() # Unsqueeze needed for pytrch's cosine_similarity.
                 sims.append(sim)
         cos_scores.append(sum(sims) / len(sims))
 
-    # 4. Multi-Krum scores
-    f = 1
-    keep_neighbors = max(1, num_clients - f - 2)
+    # 4. DEFENSE D: Multi-Krum scores
+    f = 1 # maximum number of attackers.
+    keep_neighbors = max(1, num_clients - f - 2) # Removes more distant clients, reducing outlier impact.
     krum_scores = []
     for i in range(num_clients):
+        # Calculate distances between each client, take norm, and  sort smallest to largest.
         dists = sorted([(deltas[i] - deltas[j]).norm().item() for j in range(num_clients) if i != j])
-        krum_scores.append(sum(dists[:keep_neighbors]))
+        krum_scores.append(sum(dists[:keep_neighbors])) # Sum largest for scores.
 
     def minmax(vals):
         lo, hi = min(vals), max(vals)
-        if hi - lo < 1e-12:
+        if hi - lo < 1e-12: # if values are too close, return 0
             return [0.0] * len(vals)
         return [(v - lo) / (hi - lo) for v in vals]
 
-    cos_anom = minmax([1.0 - c for c in cos_scores])
+    cos_anom = minmax([1.0 - c for c in cos_scores]) # High is good, so invert.
     l2_anom = minmax([abs(nr - med_norm) / max(med_norm, 1e-12) for nr in norms])
     krum_anom = minmax(krum_scores)
 
     combined_scores = [max(c, l, k) for c, l, k in zip(cos_anom, l2_anom, krum_anom)]
+    # combined_scores = [mean(c, l, k) for c, l, k in zip(cos_anom, l2_anom, krum_anom)] # ablation test
 
     flagged_client = -1
     if current_round >= 2:
         hard_outliers = []
-        for i in range(num_clients):
-            if norms[i] > 3.0 * max(med_norm, 1e-12) or cos_scores[i] < 0.0:
+        for i in range(num_clients):  
+            if norms[i] > 3.0 * max(med_norm, 1e-12) or cos_scores[i] < 0.0: # Checks for enormous or opposite direction updates.
                 hard_outliers.append(i)
 
         if hard_outliers:
             hard_outliers.sort(key=lambda idx: combined_scores[idx], reverse=True)
-            flagged_client = hard_outliers[0]
-        else:
-            flagged_client = int(torch.tensor(combined_scores).argmax().item())
+            flagged_client = hard_outliers[0]\
+            flag_type = "hard"
 
-        print(f"  [Defense] Flagged malicious client: Client {flagged_client} (norm={norms[flagged_client]:.2f}, cos={cos_scores[flagged_client]:.4f})")
+        else: # Otherwise, flags the client with the highest anonamly score.
+            flagged_client = int(torch.tensor(combined_scores).argmax().item())
+            flag_type = "soft"
+
+        print(f"  [Defense] Flagged malicious client: Client {flagged_client} (norm={norms[flagged_client]:.2f}, cos={cos_scores[flagged_client]:.4f}, type={flag_type})")
 
     benign_indices = [i for i in range(num_clients) if i != flagged_client]
     print(f"  [Server] Robust aggregation (Trimmed Mean) over {len(benign_indices)} benign clients...")
