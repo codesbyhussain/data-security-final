@@ -30,6 +30,12 @@ from models import LeNetWide32
 ATTACK_TYPE = "random"
 ATTACK_SCALE = 10.0
 
+# Optional silent period: number of rounds to stay benign after round 2 before attacking.
+# Set to an integer (e.g. 0 to start at round 2, 2 to start at round 4), or None for random (0 to 3 rounds).
+SILENT_PERIOD = None
+_CALL_COUNT = 0
+_ACTUAL_SILENT_ROUNDS = None
+
 
 def _get_local_trained_state(global_state, local_dataset, device, label_flip=False, targeted_flip=False):
     # Train 1 local epoch on benign or flipped labels to get realistic gradient updates
@@ -66,6 +72,24 @@ def generate_malicious_update(client_model_state_dict, local_dataset, device):
     """
     # === STUDENTS: IMPLEMENT YOUR SIMULATED ATTACK BELOW ===
     # === MALICIOUS CLIENT LOGIC HERE ===
+    global _CALL_COUNT, _ACTUAL_SILENT_ROUNDS
+    _CALL_COUNT += 1
+
+    # Initialize random silent period on first call if not fixed
+    if _ACTUAL_SILENT_ROUNDS is None:
+        if SILENT_PERIOD is None:
+            _ACTUAL_SILENT_ROUNDS = random.randint(0, 3)  # Waits 0 to 3 extra rounds
+        else:
+            _ACTUAL_SILENT_ROUNDS = SILENT_PERIOD
+
+    global_state = {k: v.detach().clone() for k, v in client_model_state_dict.items()}
+
+    # If within the silent period, behave completely benign (lying low)
+    if _CALL_COUNT <= _ACTUAL_SILENT_ROUNDS:
+        print(f"  [Simulated Malicious Client] In silent period (call {_CALL_COUNT}/{_ACTUAL_SILENT_ROUNDS}); behaving benignly.")
+        trained = _get_local_trained_state(global_state, local_dataset, device)
+        return {k: v.detach().cpu() for k, v in trained.items()}
+
     attack = ATTACK_TYPE.lower()
 
     # Dynamic selection across Category B (Instant Disruption) and Benign
