@@ -39,12 +39,40 @@ def client_update(client_model, optimizer, train_loader, device, epochs=1):
             optimizer.step()
 
 
+def trimmed_mean(client_models, benign_indices, trim_ratio=0.1):
+    # Coordinate-wise trimmed mean across kept benign models
+    states = [client_models[i].state_dict() for i in benign_indices]
+    n = len(states)
+    if n <= 2:
+        # Fall back to standard average if too few
+        avg = {}
+        for key in states[0]:
+            stacked = torch.stack([s[key].float() for s in states], dim=0)
+            avg[key] = stacked.mean(dim=0).to(dtype=states[0][key].dtype)
+        return avg
+
+    k = max(0, int(n * trim_ratio))
+    avg = {}
+    for key in states[0]:
+        stacked = torch.stack([s[key].float() for s in states], dim=0)
+        orig_shape = stacked.shape[1:]
+        stacked_flat = stacked.view(n, -1)
+        if k > 0 and 2 * k < n:
+            sorted_flat, _ = torch.sort(stacked_flat, dim=0)
+            trimmed = sorted_flat[k:n - k]
+            mean_flat = trimmed.mean(dim=0)
+        else:
+            mean_flat = stacked_flat.mean(dim=0)
+        avg[key] = mean_flat.view(orig_shape).to(dtype=states[0][key].dtype)
+    return avg
+
+
 def detect_and_aggregate(global_model, client_models, current_round):
-    # Detect outlier client updates and aggregate benign ones
+    # Full combined defense: L2 norm + Cosine Consensus + Multi-Krum + Trimmed Mean
     global_dict = global_model.state_dict()
     num_clients = len(client_models)
 
-    # Calculate update vectors (delta from global model)
+    # 1. Update delta vectors (w_i - w_global)
     deltas = []
     for client in client_models:
         c_dict = client.state_dict()
@@ -53,12 +81,12 @@ def detect_and_aggregate(global_model, client_models, current_round):
             diffs.append((c_dict[k].float() - global_dict[k].float().to(c_dict[k].device)).reshape(-1))
         deltas.append(torch.cat(diffs))
 
-    # Calculate L2 norms of client updates
+    # 2. L2 norms and median
     norms = [torch.norm(d).item() for d in deltas]
     sorted_norms = sorted(norms)
-    median_norm = sorted_norms[len(sorted_norms) // 2]
+    med_norm = sorted_norms[len(sorted_norms) // 2]
 
-    # Calculate pairwise cosine similarity to measure consensus
+    # 3. Pairwise cosine consensus scores
     cos_scores = []
     for i in range(num_clients):
         sims = []
@@ -68,35 +96,53 @@ def detect_and_aggregate(global_model, client_models, current_round):
                 sims.append(sim)
         cos_scores.append(sum(sims) / len(sims))
 
-    # Anomaly scoring: large norm difference or low/negative cosine consensus
+    # 4. Multi-Krum scores (sum of Euclidean distances to closest n-f-2 neighbors)
+    f = 1  # 1 malicious client
+    keep_neighbors = max(1, num_clients - f - 2)
+    krum_scores = []
+    for i in range(num_clients):
+        dists = sorted([(deltas[i] - deltas[j]).norm().item() for j in range(num_clients) if i != j])
+        krum_scores.append(sum(dists[:keep_neighbors]))
+
+    # Anomaly scores (normalized [0, 1])
+    def minmax(vals):
+        lo, hi = min(vals), max(vals)
+        if hi - lo < 1e-12:
+            return [0.0] * len(vals)
+        return [(v - lo) / (hi - lo) for v in vals]
+
+    cos_anom = minmax([1.0 - c for c in cos_scores])
+    l2_anom = minmax([abs(nr - med_norm) / max(med_norm, 1e-12) for nr in norms])
+    krum_anom = minmax(krum_scores)
+
+    # Combined anomaly score: highest of any outlier signal
+    combined_scores = [max(c, l, k) for c, l, k in zip(cos_anom, l2_anom, krum_anom)]
+
     flagged_client = -1
-    if current_round >= 2:  # Attack only begins from round 2 onward per specs
-        # Flag extreme norm outliers (> 3x median) or inverted direction
+    if current_round >= 2:
+        # Hard threshold rules (detect extreme magnitude / inverted direction instantly)
+        hard_outliers = []
         for i in range(num_clients):
-            if norms[i] > 3.0 * max(median_norm, 1e-6) or cos_scores[i] < 0.0:
-                flagged_client = i
-                break
-        # If no hard threshold hit, pick lowest cosine similarity
-        if flagged_client == -1:
-            flagged_client = int(torch.tensor(cos_scores).argmin().item())
+            if norms[i] > 3.0 * max(med_norm, 1e-12) or cos_scores[i] < 0.0:
+                hard_outliers.append(i)
 
-        print(f"  [Defense] Detected and flagged malicious client: Client {flagged_client}")
+        if hard_outliers:
+            hard_outliers.sort(key=lambda idx: combined_scores[idx], reverse=True)
+            flagged_client = hard_outliers[0]
+        else:
+            # Pick client with highest combined anomaly score
+            flagged_client = int(torch.tensor(combined_scores).argmax().item())
 
-    # Keep benign clients
+        print(f"  [Defense] Flagged malicious client: Client {flagged_client} (norm={norms[flagged_client]:.2f}, cos={cos_scores[flagged_client]:.4f})")
+
+    # Exclude flagged client and aggregate benign updates via Trimmed Mean
     benign_indices = [i for i in range(num_clients) if i != flagged_client]
-    print(f"  [Server] Aggregating {len(benign_indices)} benign client updates...")
+    print(f"  [Server] Robust aggregation (Trimmed Mean) over {len(benign_indices)} benign clients...")
 
-    # FedAvg on benign clients
-    new_global_dict = {}
-    for key in global_dict.keys():
-        stacked = torch.stack(
-            [client_models[i].state_dict()[key].float() for i in benign_indices], dim=0
-        )
-        new_global_dict[key] = stacked.mean(dim=0).to(dtype=global_dict[key].dtype)
-
+    new_global_dict = trimmed_mean(client_models, benign_indices, trim_ratio=0.1)
     global_model.load_state_dict(new_global_dict)
 
-    # Distribute updated weights to all clients
+    # Broadcast updated global parameters to all clients
     for client in client_models:
         client.load_state_dict(global_model.state_dict())
 
@@ -120,10 +166,10 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
-    # Level 3 rules: 10 clients (9 benign, 1 malicious), 10 global rounds, 1 local epoch
+    # Level 3 parameters: 10 clients (9 benign, 1 malicious), 10 rounds, 1 local epoch
     n_clients = 10
     malicious_client_id = 9  # Designated malicious client
-    attack_start_round = 2   # Malicious client behaves normally in round 1, attacks from round 2
+    attack_start_round = 2   # Attack starts from round 2 onward
     global_epochs = 10
     local_epochs = 1
     learning_rate = 0.0005
@@ -144,16 +190,16 @@ def main():
     optimizers = [torch.optim.Adam(m.parameters(), lr=learning_rate) for m in client_models]
 
     best_accuracy = 0.0
+    caught_rounds = []
 
     print("Starting Level 3 Robust Federated Learning...")
     for round_num in range(1, global_epochs + 1):
         print(f"\nGlobal Round {round_num}/{global_epochs}")
 
-        # Train benign clients locally
+        # Client updates
         for idx in range(n_clients):
             if idx == malicious_client_id and round_num >= attack_start_round:
                 # === MALICIOUS CLIENT LOGIC HERE ===
-                # During Demo Day, TA can replace or inspect this logic
                 malicious_state = generate_malicious_update(
                     global_model.state_dict(),
                     client_datasets[idx],
@@ -163,15 +209,17 @@ def main():
             else:
                 client_update(client_models[idx], optimizers[idx], client_loaders[idx], device, local_epochs)
 
-        # Defense mechanism: detect malicious updates & aggregate benign updates
+        # Defense mechanism: multi-metric detection + trimmed mean aggregation
         detected_id = detect_and_aggregate(global_model, client_models, round_num)
+
         if round_num >= attack_start_round:
             if detected_id == malicious_client_id:
-                print(f"  [Result] Success! Correctly identified malicious client {malicious_client_id}.")
+                caught_rounds.append(round_num)
+                print(f"  [Result] Success: Correctly identified malicious client {malicious_client_id}!")
             else:
-                print(f"  [Result] Warning: Detected client {detected_id}, but injected was {malicious_client_id}.")
+                print(f"  [Result] Warning: Injected client was {malicious_client_id}, but flagged client was {detected_id}")
 
-        # Evaluate global model
+        # Evaluation
         accuracy = test_model(global_model, test_loader, device)
         print(f"Global Model Test Accuracy after round {round_num}: {accuracy:.4f} ({accuracy:.2%})")
 
@@ -180,9 +228,9 @@ def main():
             torch.save(global_model.state_dict(), checkpoint_path)
             print(f"Saved best model with accuracy {best_accuracy:.2%} to {checkpoint_path}")
 
-    # Save final model parameters (required for evaluation)
     torch.save(global_model.state_dict(), 'robust_federated_model.pth')
-    print(f"\nTraining completed. Best Test Accuracy: {best_accuracy:.2%}")
+    print(f"\nTraining completed. Malicious client caught in rounds: {caught_rounds}")
+    print(f"Best Test Accuracy: {best_accuracy:.2%}")
 
 
 if __name__ == '__main__':
