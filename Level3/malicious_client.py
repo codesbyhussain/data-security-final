@@ -6,39 +6,19 @@ from torch.utils.data import DataLoader
 
 from models import LeNetWide32
 
-# =============================================================================
-# Attack Options:
-#
-# Category A (Cumulative Drift - best executed in consecutive rounds):
-#   - 'alie': A Little Is Enough (Baruch et al., NeurIPS 2019)
-#   - 'ipm': Inner Product Manipulation (Xie et al., ICML 2020)
-#   - 'label_flip': All labels inverted (0 <-> 9)
-#   - 'targeted_flip': Specific label flipped (1 -> 7)
-#   - 'zero': Weights zeroed / frozen
-#
-# Category B (Instant Disruption - best executed in random / isolated rounds):
-#   - 'sign_flip': Gradient direction flipped (2 * global - trained)
-#   - 'gaussian': Scaled Gaussian noise added to weights
-#   - 'scale': Weights scaled by large constant factor
-#   - 'min_max': Min-Max boundary evasion (Fang et al., USENIX 2020)
-#
-# Dynamic Modes:
-#   - 'random': Randomly selects an attack from Category B or 'benign' (no attack)
-#   - 'benign': Acts normally, submits legitimate local training
-# =============================================================================
-
+# Attack selection:
+# 'random' | 'sign_flip' | 'gaussian' | 'scale' | 'label_flip' | 'benign'
 ATTACK_TYPE = "random"
 ATTACK_SCALE = 10.0
 
-# Optional silent period: number of rounds to stay benign after round 2 before attacking.
-# Set to an integer (e.g. 0 to start at round 2, 2 to start at round 4), or None for random (0 to 3 rounds).
+# Silent period: number of rounds to wait after round 2 before starting attack.
+# Set to an integer (0 = starts at round 2, 2 = starts at round 4), or None for random (0 to 3 rounds).
 SILENT_PERIOD = None
 _CALL_COUNT = 0
 _ACTUAL_SILENT_ROUNDS = None
 
 
-def _get_local_trained_state(global_state, local_dataset, device, label_flip=False, targeted_flip=False):
-    # Train 1 local epoch on benign or flipped labels to get realistic gradient updates
+def _get_local_trained_state(global_state, local_dataset, device, label_flip=False):
     model = LeNetWide32().to(device)
     model.load_state_dict(global_state)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.0005)
@@ -50,8 +30,6 @@ def _get_local_trained_state(global_state, local_dataset, device, label_flip=Fal
         yb = yb.to(device)
         if label_flip:
             yb = 9 - yb
-        elif targeted_flip:
-            yb = torch.where(yb == 1, torch.tensor(7, device=device), yb)
 
         loss = F.cross_entropy(model(xb), yb)
         loss.backward()
@@ -75,10 +53,10 @@ def generate_malicious_update(client_model_state_dict, local_dataset, device):
     global _CALL_COUNT, _ACTUAL_SILENT_ROUNDS
     _CALL_COUNT += 1
 
-    # Initialize random silent period on first call if not fixed
+    # Determine silent period on first invocation
     if _ACTUAL_SILENT_ROUNDS is None:
         if SILENT_PERIOD is None:
-            _ACTUAL_SILENT_ROUNDS = random.randint(0, 3)  # Waits 0 to 3 extra rounds
+            _ACTUAL_SILENT_ROUNDS = random.randint(0, 3)
         else:
             _ACTUAL_SILENT_ROUNDS = SILENT_PERIOD
         attack_start_round = 2 + _ACTUAL_SILENT_ROUNDS
@@ -86,7 +64,7 @@ def generate_malicious_update(client_model_state_dict, local_dataset, device):
 
     global_state = {k: v.detach().clone() for k, v in client_model_state_dict.items()}
 
-    # If within the silent period, behave completely benign (lying low)
+    # If within silent period, behave benignly (lying low)
     if _CALL_COUNT <= _ACTUAL_SILENT_ROUNDS:
         print(f"  [Simulated Malicious Client] In silent period (call {_CALL_COUNT}/{_ACTUAL_SILENT_ROUNDS}); behaving benignly.")
         trained = _get_local_trained_state(global_state, local_dataset, device)
@@ -94,32 +72,18 @@ def generate_malicious_update(client_model_state_dict, local_dataset, device):
 
     attack = ATTACK_TYPE.lower()
 
-    # Dynamic selection across Category B (Instant Disruption) and Benign
+    # Dynamic selection across baseline attacks and benign
     if attack == "random":
-        attack_pool = [
-            "sign_flip",
-            "gaussian",
-            "scale",
-            "min_max",
-            "benign",
-        ]
+        attack_pool = ["sign_flip", "gaussian", "scale", "label_flip", "benign"]
         attack = random.choice(attack_pool)
         print(f"  [Simulated Malicious Client] Executing attack: {attack}")
 
-    global_state = {k: v.detach().clone() for k, v in client_model_state_dict.items()}
-
-    # -------------------------------------------------------------------------
-    # Dormant / Benign Mode (No attack in this round)
-    # -------------------------------------------------------------------------
+    # 1. Benign mode (no attack this round)
     if attack == "benign":
         trained = _get_local_trained_state(global_state, local_dataset, device)
         return {k: v.detach().cpu() for k, v in trained.items()}
 
-    # -------------------------------------------------------------------------
-    # Category B: Instant Disruption Attacks
-    # -------------------------------------------------------------------------
-
-    # 1. Gaussian noise attack
+    # 2. Gaussian noise attack
     if attack == "gaussian":
         out = {}
         for key, param in global_state.items():
@@ -128,14 +92,14 @@ def generate_malicious_update(client_model_state_dict, local_dataset, device):
             out[key] = (p + torch.randn_like(p) * scale).cpu()
         return out
 
-    # 2. Scaling attack
+    # 3. Scaling attack
     if attack == "scale":
         return {
             k: (v.to(device).float() * ATTACK_SCALE).detach().cpu()
             for k, v in global_state.items()
         }
 
-    # 3. Sign-flipping attack
+    # 4. Sign-flipping attack
     if attack == "sign_flip":
         trained = _get_local_trained_state(global_state, local_dataset, device)
         return {
@@ -143,59 +107,9 @@ def generate_malicious_update(client_model_state_dict, local_dataset, device):
             for k in global_state
         }
 
-    # 4. Min-Max boundary attack (Fang et al., USENIX Security 2020)
-    if attack == "min_max":
-        trained = _get_local_trained_state(global_state, local_dataset, device)
-        out = {}
-        for k in global_state:
-            g = global_state[k].to(device).float()
-            t = trained[k].to(device).float()
-            delta = t - g
-            norm = delta.norm().clamp(min=1e-5)
-            unit_reverse = -delta / norm
-            out[k] = (g + unit_reverse * (norm * 0.9)).detach().cpu()
-        return out
-
-    # -------------------------------------------------------------------------
-    # Category A: Cumulative Drift Attacks
-    # -------------------------------------------------------------------------
-
-    # 5. ALIE: A Little Is Enough (Baruch et al., NeurIPS 2019)
-    if attack == "alie":
-        trained = _get_local_trained_state(global_state, local_dataset, device)
-        z_max = 1.0
-        out = {}
-        for k in global_state:
-            g = global_state[k].to(device).float()
-            t = trained[k].to(device).float()
-            delta = t - g
-            std = delta.std().clamp(min=1e-5)
-            out[k] = (g - z_max * std * torch.sign(delta)).detach().cpu()
-        return out
-
-    # 6. IPM: Inner Product Manipulation (Xie et al., ICML 2020)
-    if attack == "ipm":
-        trained = _get_local_trained_state(global_state, local_dataset, device)
-        epsilon = 0.5
-        out = {}
-        for k in global_state:
-            g = global_state[k].to(device).float()
-            t = trained[k].to(device).float()
-            delta = t - g
-            out[k] = (g - epsilon * delta).detach().cpu()
-        return out
-
-    # 7. Zeroing / Freezing attack
-    if attack == "zero":
-        return {k: torch.zeros_like(v).cpu() for k, v in global_state.items()}
-
-    # 8. Label-flipping attacks (untargeted and targeted)
-    if attack in ("label_flip", "targeted_flip"):
-        trained = _get_local_trained_state(
-            global_state, local_dataset, device,
-            label_flip=(attack == "label_flip"),
-            targeted_flip=(attack == "targeted_flip")
-        )
+    # 5. Label-flipping attack
+    if attack == "label_flip":
+        trained = _get_local_trained_state(global_state, local_dataset, device, label_flip=True)
         return {k: v.detach().cpu() for k, v in trained.items()}
 
     raise ValueError(f"Unknown ATTACK_TYPE={attack!r}")
