@@ -5,6 +5,11 @@ Handwritten code for MNIST classification across 3 levels:
 - **Level 2**: Federated Learning (10 clients, FedAvg)
 - **Level 3**: Robust Federated Learning with Attack Detection
 
+## Models
+Defined in `models.py` across each level:
+- **`LeNetWide32`** (Primary model): Widened LeNet architecture evaluated on a 32x32 padded canvas with max-pooling.
+- **`LeNet5`** (Baseline comparison model): Classic LeNet-5 architecture (LeCun et al., 1998, *"Gradient-based learning applied to document recognition"*, Proc. IEEE).
+
 ## Environment Setup
 
 Create and activate a virtual environment:
@@ -52,5 +57,5 @@ python train.py
 python test.py
 ```
 - `malicious_client.py`: Contains `generate_malicious_update(...)` isolated for Demo Day evaluation. Marked with `# === MALICIOUS CLIENT LOGIC HERE ===`.
-- `train.py`: Runs 10 rounds with 1 malicious client (Client 9 attacks starting from round 2). Anomaly detection filters the attacker, FedAvg aggregates benign updates, and saves `best_model.pth` and `robust_federated_model.pth`.
+- `train.py`: Runs 10 rounds with 1 malicious client (Client 9 attacks starting from round 2). Anomaly detection filters the attacker, Trimmed Mean aggregates benign updates, and saves `best_model.pth` and `robust_federated_model.pth`.
 - `test.py`: Evaluates the robust global model on the test dataset.
