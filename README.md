@@ -1,2 +1,50 @@
-# data-security-final
-Handwritten code for Data Security Project. 3 levels, level 3 has malicious client
+# CSC8370 Data Security Final Project
+
+Handwritten code for MNIST classification across 3 levels:
+- **Level 1**: Centralized Learning
+- **Level 2**: Federated Learning (10 clients, FedAvg)
+- **Level 3**: Robust Federated Learning with Attack Detection
+
+## Environment Setup
+
+Install the required packages:
+```bash
+pip install -r requirements.txt
+```
+
+Recommended Python version: Python 3.10+ with PyTorch 2.0+.
+
+---
+
+## Instructions to Run
+
+### Level 1 - Centralized Learning
+Navigate to `Level1`:
+```bash
+cd Level1
+python train.py
+python test.py
+```
+- `train.py`: Trains the model on MNIST and saves `best_model.pth`.
+- `test.py`: Loads `best_model.pth` and evaluates accuracy on the test set.
+
+### Level 2 - Federated Learning
+Navigate to `Level2`:
+```bash
+cd Level2
+python train.py
+python test.py
+```
+- `train.py`: Runs 10 global rounds across 10 clients (1 local epoch each) and saves `best_model.pth`.
+- `test.py`: Evaluates the pre-trained saved model on the test dataset.
+
+### Level 3 - Robust Federated Learning (Demo Day)
+Navigate to `Level3`:
+```bash
+cd Level3
+python train.py
+python test.py
+```
+- `malicious_client.py`: Contains `generate_malicious_update(...)` isolated for Demo Day evaluation. Marked with `# === MALICIOUS CLIENT LOGIC HERE ===`.
+- `train.py`: Runs 10 rounds with 1 malicious client (Client 9 attacks starting from round 2). Anomaly detection filters the attacker, FedAvg aggregates benign updates, and saves `best_model.pth` and `robust_federated_model.pth`.
+- `test.py`: Evaluates the robust global model on the test dataset.

@@ -1,0 +1,4 @@
+# Python dependencies from scratch
+torch
+torchvision
+numpy
