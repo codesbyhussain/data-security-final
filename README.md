@@ -1,6 +1,6 @@
 # CSC8370 Data Security Final Project
 
-Handwritten code for MNIST classification across 3 levels:
+MNIST classification across 3 levels:
 - **Level 1**: Centralized Learning
 - **Level 2**: Federated Learning (10 clients, FedAvg)
 - **Level 3**: Robust Federated Learning with Attack Detection
