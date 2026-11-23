@@ -49,7 +49,8 @@ def trimmed_mean(client_models, benign_indices, trim_ratio=0.1):
             avg[key] = stacked.mean(dim=0).to(dtype=states[0][key].dtype)
         return avg
 
-    k = max(0, int(n * trim_ratio))
+    # k = max(0, int(n * trim_ratio))
+    k = max(0, round(n * trim_ratio))
     avg = {}
     for key in states[0]:
         stacked = torch.stack([s[key].float() for s in states], dim=0)
