@@ -44,7 +44,6 @@ def trimmed_mean(client_models, benign_indices, trim_ratio=0.1):
     states = [client_models[i].state_dict() for i in benign_indices]
     n = len(states)
     if n <= 2:
-        # Fall back to standard average if too few
         avg = {}
         for key in states[0]:
             stacked = torch.stack([s[key].float() for s in states], dim=0)
@@ -68,9 +67,27 @@ def trimmed_mean(client_models, benign_indices, trim_ratio=0.1):
 
 
 def detect_and_aggregate(global_model, client_models, current_round):
-    # Full combined defense: L2 norm + Cosine Consensus + Multi-Krum + Trimmed Mean
+    # Full combined defense: NaN/Inf check + L2 norm + Cosine Consensus + Multi-Krum + Trimmed Mean
     global_dict = global_model.state_dict()
     num_clients = len(client_models)
+
+    # 0. Check for NaN / Inf injection attacks
+    corrupted_clients = []
+    for i, client in enumerate(client_models):
+        for param in client.state_dict().values():
+            if not torch.isfinite(param).all():
+                corrupted_clients.append(i)
+                break
+
+    if corrupted_clients and current_round >= 2:
+        flagged_client = corrupted_clients[0]
+        print(f"  [Defense] Flagged malicious client: Client {flagged_client} (detected NaN/Inf values)")
+        benign_indices = [i for i in range(num_clients) if i != flagged_client]
+        new_global_dict = trimmed_mean(client_models, benign_indices, trim_ratio=0.1)
+        global_model.load_state_dict(new_global_dict)
+        for client in client_models:
+            client.load_state_dict(global_model.state_dict())
+        return flagged_client
 
     # 1. Update delta vectors (w_i - w_global)
     deltas = []
@@ -163,6 +180,9 @@ def test_model(model, test_loader, device):
 
 
 def main():
+    # Set seed for reproducible experiments
+    torch.manual_seed(42)
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 

@@ -5,7 +5,8 @@ from torch.utils.data import DataLoader
 
 from models import ConvNet
 
-# Attack selection: 'sign_flip', 'gaussian', 'scale', 'label_flip'
+# Attack selection for self-testing:
+# 'sign_flip' | 'gaussian' | 'scale' | 'label_flip' | 'targeted_flip' | 'zero'
 ATTACK_TYPE = "sign_flip"
 ATTACK_SCALE = 10.0
 
@@ -30,7 +31,7 @@ def generate_malicious_update(client_model_state_dict, local_dataset, device):
         for key, param in global_state.items():
             p = param.to(device).float()
             scale = p.std().clamp(min=1e-3) * ATTACK_SCALE
-            out[key] = (p + torch.randn_like(p) * scale).detach().cpu()
+            out[key] = (p + torch.randn_like(p) * scale).cpu()
         return out
 
     # 2. Scaling attack
@@ -40,7 +41,14 @@ def generate_malicious_update(client_model_state_dict, local_dataset, device):
             for k, v in global_state.items()
         }
 
-    # For sign_flip and label_flip: train locally for 1 epoch, then poison
+    # 3. Zeroing / Freeze attack
+    if attack == "zero":
+        return {
+            k: torch.zeros_like(v).cpu()
+            for k, v in global_state.items()
+        }
+
+    # For training-based attacks: train locally for 1 epoch, then modify
     model = ConvNet().to(device)
     model.load_state_dict(global_state)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.0005)
@@ -50,8 +58,12 @@ def generate_malicious_update(client_model_state_dict, local_dataset, device):
     for xb, yb in loader:
         xb = xb.to(device)
         yb = yb.to(device)
+
         if attack == "label_flip":
-            yb = 9 - yb  # Invert labels (0->9, 1->8, etc.)
+            yb = 9 - yb  # Invert all labels (0->9, 1->8, etc.)
+        elif attack == "targeted_flip":
+            yb = torch.where(yb == 1, torch.tensor(7, device=device), yb)  # Target 1 -> 7
+
         loss = F.cross_entropy(model(xb), yb)
         loss.backward()
         optimizer.step()
@@ -59,11 +71,11 @@ def generate_malicious_update(client_model_state_dict, local_dataset, device):
 
     trained = model.state_dict()
 
-    # 3. Label flip attack
-    if attack == "label_flip":
+    # 4. Label-flipping attacks
+    if attack in ("label_flip", "targeted_flip"):
         return {k: v.detach().cpu() for k, v in trained.items()}
 
-    # 4. Sign flip attack: reverse update direction (2 * global - trained)
+    # 5. Sign-flipping attack: reverse update direction (2 * global - trained)
     if attack == "sign_flip":
         return {
             k: (2 * global_state[k].to(device) - trained[k].to(device)).detach().cpu()
