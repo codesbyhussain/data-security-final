@@ -81,6 +81,8 @@ def generate_malicious_update(client_model_state_dict, local_dataset, device):
             _ACTUAL_SILENT_ROUNDS = random.randint(0, 3)  # Waits 0 to 3 extra rounds
         else:
             _ACTUAL_SILENT_ROUNDS = SILENT_PERIOD
+        attack_start_round = 2 + _ACTUAL_SILENT_ROUNDS
+        print(f"  [Simulated Malicious Client] Configured silent period: {_ACTUAL_SILENT_ROUNDS} round(s). Attack will start in Round {attack_start_round}.")
 
     global_state = {k: v.detach().clone() for k, v in client_model_state_dict.items()}
 
