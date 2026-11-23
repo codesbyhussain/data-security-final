@@ -1,13 +1,14 @@
 ### Level 3 Code Structure Requirement (For Demo Day Testing)
+import random
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from models import ConvNet
+from models import LeNetWide32
 
-# Attack selection for self-testing:
-# 'sign_flip' | 'gaussian' | 'scale' | 'label_flip' | 'targeted_flip' | 'zero'
-ATTACK_TYPE = "sign_flip"
+# Attack selection for experiments:
+# 'random' | 'sign_flip' | 'gaussian' | 'scale' | 'label_flip' | 'targeted_flip' | 'zero'
+ATTACK_TYPE = "random"
 ATTACK_SCALE = 10.0
 
 
@@ -23,6 +24,13 @@ def generate_malicious_update(client_model_state_dict, local_dataset, device):
     # === STUDENTS: IMPLEMENT YOUR SIMULATED ATTACK BELOW ===
     # === MALICIOUS CLIENT LOGIC HERE ===
     attack = ATTACK_TYPE.lower()
+
+    # Dynamic attack randomization per round
+    if attack == "random":
+        attack_pool = ["sign_flip", "gaussian", "scale", "label_flip", "targeted_flip", "zero"]
+        attack = random.choice(attack_pool)
+        print(f"  [Simulated Malicious Client] Executing dynamic attack: {attack}")
+
     global_state = {k: v.detach().clone() for k, v in client_model_state_dict.items()}
 
     # 1. Gaussian noise attack
@@ -49,7 +57,7 @@ def generate_malicious_update(client_model_state_dict, local_dataset, device):
         }
 
     # For training-based attacks: train locally for 1 epoch, then modify
-    model = ConvNet().to(device)
+    model = LeNetWide32().to(device)
     model.load_state_dict(global_state)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.0005)
     loader = DataLoader(local_dataset, batch_size=50, shuffle=True)
@@ -82,4 +90,4 @@ def generate_malicious_update(client_model_state_dict, local_dataset, device):
             for k in global_state
         }
 
-    raise ValueError(f"Unknown ATTACK_TYPE={ATTACK_TYPE!r}")
+    raise ValueError(f"Unknown ATTACK_TYPE={attack!r}")
