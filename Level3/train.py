@@ -144,7 +144,7 @@ def detect_and_aggregate(global_model, client_models, current_round):
 
         if hard_outliers:
             hard_outliers.sort(key=lambda idx: combined_scores[idx], reverse=True)
-            flagged_client = hard_outliers[0]\
+            flagged_client = hard_outliers[0]
             flag_type = "hard"
 
         else: # Otherwise, flags the client with the highest anonamly score.
