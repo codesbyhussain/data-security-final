@@ -7,9 +7,8 @@ import torch.nn.functional as F
 '''
 Based on the tutorial:
 https://github.com/pytorch/tutorials/blob/main/beginner_source/introyt/modelsyt_tutorial.py
-
-
 '''
+
 
 class LeNet5(nn.Module):
     def __init__(self):
@@ -22,10 +21,11 @@ class LeNet5(nn.Module):
 
     def forward(self, xb):
         xb = xb.view(-1, 1, 28, 28)
-        xb = F.avg_pool2d(F.relu(self.conv1(xb)), 2) # Avg more similar to LeCun's 1998 paper
+        xb = F.avg_pool2d(F.relu(self.conv1(xb)), 2)  # Avg pool more similar to LeCun's 1998 paper
         xb = F.avg_pool2d(F.relu(self.conv2(xb)), 2)
         xb = xb.flatten(1)
         return self.fc3(F.relu(self.fc2(F.relu(self.fc1(xb)))))
+
 
 class LeNetWide32(nn.Module):
     def __init__(self):
@@ -38,7 +38,7 @@ class LeNetWide32(nn.Module):
 
     def forward(self, xb):
         xb = xb.view(-1, 1, 28, 28)
-        xb = F.max_pool2d(F.relu(self.conv1(xb)), 2) # Max pool as per the pytorch tutorial
+        xb = F.max_pool2d(F.relu(self.conv1(xb)), 2)  # Max pool as per the pytorch tutorial
         xb = F.max_pool2d(F.relu(self.conv2(xb)), 2)
         xb = xb.flatten(1)
         return self.fc3(F.relu(self.fc2(F.relu(self.fc1(xb)))))
