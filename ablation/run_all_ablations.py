@@ -8,55 +8,11 @@ import torchvision
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader, random_split
 
-import sys
-from pathlib import Path
-
-# Add Level3 folder to import models and attack logic
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "Level3"))
-
-from models import LeNetWide32, LeNet5
-from malicious_client import generate_malicious_update
+# Import ablation-specific models and malicious update generator
+from models_ablation import SimpleMLP, LeNet5, LeNetAvgPool, LeNetWide32
+from malicious_ablation import generate_ablation_malicious_update
 
 
-# =============================================================================
-# Models for Ablation Studies
-# =============================================================================
-class SimpleMLP(nn.Module):
-    '''Simple 2-layer MLP (Non-convolutional, slower convergence).'''
-    def __init__(self):
-        super().__init__()
-        self.fc1 = nn.Linear(28 * 28, 128)
-        self.fc2 = nn.Linear(128, 64)
-        self.fc3 = nn.Linear(64, 10)
-
-    def forward(self, xb):
-        xb = xb.view(-1, 28 * 28)
-        xb = F.relu(self.fc1(xb))
-        xb = F.relu(self.fc2(xb))
-        return self.fc3(xb)
-
-
-class LeNetAvgPool(nn.Module):
-    '''LeNet variant using Average Pooling instead of Max Pooling.'''
-    def __init__(self):
-        super().__init__()
-        self.conv1 = nn.Conv2d(1, 16, 5, padding=2)
-        self.conv2 = nn.Conv2d(16, 48, 5)
-        self.fc1 = nn.Linear(48 * 5 * 5, 256)
-        self.fc2 = nn.Linear(256, 128)
-        self.fc3 = nn.Linear(128, 10)
-
-    def forward(self, xb):
-        xb = xb.view(-1, 1, 28, 28)
-        xb = F.avg_pool2d(F.relu(self.conv1(xb)), 2)
-        xb = F.avg_pool2d(F.relu(self.conv2(xb)), 2)
-        xb = xb.flatten(1)
-        return self.fc3(F.relu(self.fc2(F.relu(self.fc1(xb)))))
-
-
-# =============================================================================
-# Aggregation Functions
-# =============================================================================
 def trimmed_mean(client_models, benign_indices, trim_ratio=0.1):
     states = [client_models[i].state_dict() for i in benign_indices]
     n = len(states)
@@ -85,9 +41,6 @@ def standard_mean(client_models, benign_indices):
     return avg
 
 
-# =============================================================================
-# Shared Dataset Loader & Evaluator
-# =============================================================================
 def get_dataloaders():
     transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])
     train_dataset = torchvision.datasets.MNIST(root="./data/mnist", train=True, download=True, transform=transform)
@@ -110,9 +63,6 @@ def eval_model(model, test_loader, device):
     return correct / total
 
 
-# =============================================================================
-# Main Ablation Runner
-# =============================================================================
 def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Running Ablation Matrix on Device: {device}")
@@ -121,11 +71,10 @@ def main():
     matrix_results = []
 
     experiments = [
-        # (Model Name, Model Class, Pool Type, Defense Type, Beta, Fusion, Malicious)
         ("SimpleMLP", SimpleMLP, "None", "Standard FedAvg", 0.0, "None", False),
-        ("SimpleMLP", SimpleMLP, "None", "Trimmed Mean", 0.1, "Max", True),
+        ("SimpleMLP (Protected)", SimpleMLP, "None", "Trimmed Mean", 0.1, "Max", True),
         ("LeNet5", LeNet5, "AvgPool", "Standard FedAvg", 0.0, "None", False),
-        ("LeNet5", LeNet5, "AvgPool", "Trimmed Mean", 0.1, "Max", True),
+        ("LeNet5 (Protected)", LeNet5, "AvgPool", "Trimmed Mean", 0.1, "Max", True),
         ("LeNetWide32", LeNetAvgPool, "AvgPool", "Standard FedAvg", 0.0, "None", False),
         ("LeNetWide32", LeNetWide32, "MaxPool", "Standard FedAvg", 0.0, "None", False),
         ("LeNetWide32 (Under Attack, No Defense)", LeNetWide32, "MaxPool", "Standard FedAvg", 0.0, "None", True),
@@ -146,7 +95,7 @@ def main():
         for round_num in range(10):
             for idx in range(10):
                 if idx == 9 and has_attack and round_num >= 1:
-                    mal_state = generate_malicious_update(global_model.state_dict(), client_datasets[idx], device)
+                    mal_state = generate_ablation_malicious_update(global_model.state_dict(), client_datasets[idx], device)
                     client_models[idx].load_state_dict(mal_state)
                 else:
                     client_models[idx].train()
@@ -157,19 +106,15 @@ def main():
                         loss.backward()
                         optimizers[idx].step()
 
-            # Server Aggregation
             if has_attack and "No Defense" in name:
-                # Naive FedAvg includes the attacker
                 new_dict = standard_mean(client_models, list(range(10)))
             elif has_attack:
-                # Isolate client 9 (defense applied)
                 benign = list(range(9))
                 if defense == "Trimmed Mean":
                     new_dict = trimmed_mean(client_models, benign, trim_ratio=beta)
                 else:
                     new_dict = standard_mean(client_models, benign)
             else:
-                # Benign FedAvg across all 10 clients
                 new_dict = standard_mean(client_models, list(range(10)))
 
             global_model.load_state_dict(new_dict)
@@ -180,7 +125,6 @@ def main():
         print(f"  --> Final 10-Round Test Accuracy: {acc:.2%}")
         matrix_results.append((name, pool, defense, f"{beta:.0%}", fusion, f"{acc:.2%}"))
 
-    # Print Final Markdown Table
     print("\n" + "=" * 80)
     print("                    UNIFIED ABLATION STUDY RESULTS MATRIX                     ")
     print("=" * 80)
