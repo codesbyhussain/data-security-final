@@ -14,8 +14,8 @@ ATTACK_SCALE = 10.0
 # Silent period: number of rounds to wait after round 2 before starting attack.
 # Set to an integer (0 = starts at round 2, 2 = starts at round 4), or None for random (0 to 3 rounds).
 SILENT_PERIOD = None
-_CALL_COUNT = 0
-_ACTUAL_SILENT_ROUNDS = None
+call_count = 0
+silent_rounds = None
 
 
 def _get_local_trained_state(global_state, local_dataset, device, label_flip=False):
@@ -55,23 +55,23 @@ def generate_malicious_update(client_model_state_dict, local_dataset, device):
     """
     # === STUDENTS: IMPLEMENT YOUR SIMULATED ATTACK BELOW ===
     # === MALICIOUS CLIENT LOGIC HERE ===
-    global _CALL_COUNT, _ACTUAL_SILENT_ROUNDS
-    _CALL_COUNT += 1
+    global call_count, silent_rounds
+    call_count += 1
 
     # Determine silent period on first invocation
-    if _ACTUAL_SILENT_ROUNDS is None:
+    if silent_rounds is None:
         if SILENT_PERIOD is None:
-            _ACTUAL_SILENT_ROUNDS = random.randint(0, 3)
+            silent_rounds = random.randint(0, 3)
         else:
-            _ACTUAL_SILENT_ROUNDS = SILENT_PERIOD
-        attack_start_round = 2 + _ACTUAL_SILENT_ROUNDS
-        print(f"  [Simulated Malicious Client] Configured silent period: {_ACTUAL_SILENT_ROUNDS} round(s). Attack will start in Round {attack_start_round}.")
+            silent_rounds = SILENT_PERIOD
+        attack_start_round = 2 + silent_rounds
+        print(f"  [Simulated Malicious Client] Configured silent period: {silent_rounds} round(s). Attack will start in Round {attack_start_round}.")
 
     global_state = {k: v.detach().clone() for k, v in client_model_state_dict.items()}
 
     # If within silent period, behave benignly (lying low)
-    if _CALL_COUNT <= _ACTUAL_SILENT_ROUNDS:
-        print(f"  [Simulated Malicious Client] In silent period (call {_CALL_COUNT}/{_ACTUAL_SILENT_ROUNDS}); behaving benignly.")
+    if call_count <= silent_rounds:
+        print(f"  [Simulated Malicious Client] In silent period (call {call_count}/{silent_rounds}); behaving benignly.")
         trained = _get_local_trained_state(global_state, local_dataset, device)
         return {k: v.detach().cpu() for k, v in trained.items()}
 
