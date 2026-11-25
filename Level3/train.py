@@ -49,7 +49,7 @@ def trimmed_mean(client_models, benign_indices, trim_ratio=0.1):
             avg[key] = stacked.mean(dim=0).to(dtype=states[0][key].dtype)
         return avg
 
-    # k = max(1, int(n * trim_ratio))
+    # k = max(0, int(n * trim_ratio))
     k = max(0, round(n * trim_ratio))
     avg = {}
     for key in states[0]:
@@ -124,7 +124,7 @@ def detect_and_aggregate(global_model, client_models, current_round):
 
     def minmax(vals):
         lo, hi = min(vals), max(vals)
-        if hi - lo < 1e-12: # if values are too close, return 0
+        if hi - lo < 1e-12: # if values are too close, return 0, avoids division by zero
             return [0.0] * len(vals)
         return [(v - lo) / (hi - lo) for v in vals]
 
@@ -144,7 +144,7 @@ def detect_and_aggregate(global_model, client_models, current_round):
 
         if hard_outliers:
             hard_outliers.sort(key=lambda idx: combined_scores[idx], reverse=True)
-            flagged_client = hard_outliers[0]
+            flagged_client = hard_outliers[0]\
             flag_type = "hard"
 
         else: # Otherwise, flags the client with the highest anonamly score.
