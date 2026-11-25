@@ -115,9 +115,10 @@ def detect_and_aggregate(global_model, client_models, current_round, trim_ratio=
     for client in client_models:
         c_dict = client.state_dict()
         diffs = []
-        for k in global_dict.keys():
-            diff = (c_dict[k].float() - global_dict[k].float().to(c_dict[k].device)).reshape(-1)
+        for k in global_dict:
+            diff = (c_dict[k] - global_dict[k]).flatten() # make 1d
             diffs.append(diff)
+
         deltas.append(torch.cat(diffs))
 
     # 2. L2 norms and median
@@ -130,24 +131,32 @@ def detect_and_aggregate(global_model, client_models, current_round, trim_ratio=
         sims = []
         for j in range(num_clients):
             if i != j:
-                sim = torch.cosine_similarity(deltas[i].unsqueeze(0), deltas[j].unsqueeze(0)).item()
+                sim = torch.cosine_similarity(deltas[i], deltas[j], dim=0).item() # dim=0 because torch looks at dim1 by default
                 sims.append(sim)
         cos_scores.append(sum(sims) / len(sims))
 
     # 4. Multi-Krum scores
-    f = 1
-    keep_neighbors = max(1, num_clients - f - 2)
+    # formula lifted from https://proceedings.neurips.cc/paper/2017/file/f4b9ec30ad9f68f89b29639786cb62ef-Paper.pdf
+    keep_neighbors = 7 # 10 total, -1 for max numof malicious clients, -1 for self comparison, -1 to set upper bound of attacking distance.
     krum_scores = []
     for i in range(num_clients):
-        dists = [(deltas[i] - deltas[j]).norm().item() for j in range(num_clients) if i != j]
+        dists = []
+        for j in range(num_clients):
+            if i != j:
+                dist = torch.norm(deltas[i] - deltas[j]).square().item()
+                dists.append(dist)
         dists.sort()
         krum_scores.append(sum(dists[:keep_neighbors]))
 
     def minmax(vals):
         lo, hi = min(vals), max(vals)
-        if hi - lo < 1e-12:
-            return [0.0] * len(vals)
-        return [(v - lo) / (hi - lo) for v in vals]
+        if hi == lo:
+            return [0.0] * len(vals) # avoid division by zero if high = low
+        normalized = []
+        for v in vals:
+            score = (v - lo) / (hi - lo)
+            normalized.append(score)
+        return normalized
 
     cos_anom = minmax([1.0 - c for c in cos_scores])
     l2_anom = minmax([abs(nr - med_norm) / max(med_norm, 1e-12) for nr in norms])
@@ -160,8 +169,13 @@ def detect_and_aggregate(global_model, client_models, current_round, trim_ratio=
 
     flagged_client = -1
     if current_round >= 2:
-        hard_outliers = [i for i in range(num_clients) if norms[i] > 3.0 * max(med_norm, 1e-12) or cos_scores[i] < 0.0]
+        hard_outliers = []
+        norm_threshold = 3.0 * med_norm #note if med norm is 0, then all non zero norm clients will be "hard", but this is very unlikely
 
+        for i in range(num_clients):
+            if norms[i] > norm_threshold or cos_scores[i] < 0:
+                hard_outliers.append(i)
+    
         if hard_outliers:
             candidates = hard_outliers
             flag_type = "hard"
@@ -171,7 +185,7 @@ def detect_and_aggregate(global_model, client_models, current_round, trim_ratio=
         
         flagged_client = candidates[0]
 
-        for i in candidates:
+        for i in candidates: # get index of biggest score
             if combined_scores[i] > combined_scores[flagged_client]:
                 flagged_client = i
 
