@@ -7,12 +7,12 @@ from torch.utils.data import DataLoader
 from models import LeNetWide32, LeNet5
 
 # Attack selection:
-# 'random' | 'sign_flip' | 'gaussian' | 'scale' | 'label_flip' | 'benign'
+# 'random', 'sign_flip', 'gaussian', 'scale', 'label_flip',  'benign'
 ATTACK_TYPE = "random"
 ATTACK_SCALE = 10.0
 
 # Silent period: number of rounds to wait after round 2 before starting attack.
-# Set to an integer (0 = starts at round 2, 2 = starts at round 4), or None for random (0 to 3 rounds).
+# Set to an integer 0 starts at round 2, 1 starts at round 3 etc
 SILENT_PERIOD = None
 callCount = 0
 silentRounds = None
