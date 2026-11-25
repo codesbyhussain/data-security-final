@@ -10,6 +10,20 @@ https://github.com/pytorch/tutorials/blob/main/beginner_source/introyt/modelsyt_
 '''
 
 
+class SimpleMLP(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.fc1 = nn.Linear(28 * 28, 128)
+        self.fc2 = nn.Linear(128, 64)
+        self.fc3 = nn.Linear(64, 10)
+
+    def forward(self, xb):
+        xb = xb.view(-1, 28 * 28)
+        xb = F.relu(self.fc1(xb))
+        xb = F.relu(self.fc2(xb))
+        return self.fc3(xb)
+
+
 class LeNet5(nn.Module):
     def __init__(self):
         super().__init__()

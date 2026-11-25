@@ -7,7 +7,7 @@ import torchvision
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 
-from models import LeNetWide32, LeNet5
+from models import LeNetWide32, LeNet5, SimpleMLP
 
 
 def load_data(batch_size=50):
@@ -34,7 +34,7 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
-    # Model choice: "wide" (LeNetWide32, primary) or "lenet5" (baseline)
+    # Model choice: "wide" (LeNetWide32, primary), "lenet5" (baseline), or "mlp" (SimpleMLP)
     model_type = "wide"
     learning_rate = 0.0005
     epochs = 5
@@ -45,6 +45,8 @@ def main():
 
     if model_type == "lenet5":
         model = LeNet5().to(device)
+    elif model_type == "mlp":
+        model = SimpleMLP().to(device)
     else:
         model = LeNetWide32().to(device)
 
