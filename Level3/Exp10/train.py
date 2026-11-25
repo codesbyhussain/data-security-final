@@ -1,19 +1,18 @@
-'''Level 3 robust federated learning training.'''
-
-import copy
-import random
-import numpy as np
 import torch
-import torch.nn as nn
 import torchvision
 import torchvision.transforms as transforms
-from torch.utils.data import DataLoader, random_split
+import numpy as np
+import random
+from torch.utils.data import random_split, DataLoader
+import torch.nn.functional as F
+import torch.nn as nn
+import copy
 
-from models import LeNetWide32, LeNet5
+from models import LeNetWide32, LeNet5, SimpleMLP, ConvNet
 from malicious_client import generate_malicious_update
 
 
-def setSeed(seed=42):
+def set_seed(seed=42):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -23,322 +22,253 @@ def setSeed(seed=42):
     torch.backends.cudnn.benchmark = False
 
 
-def loadData(tx):
-    trainDs = torchvision.datasets.MNIST(
-        root="./data/mnist", train=True, download=True, transform=tx
-    )
-    testDs = torchvision.datasets.MNIST(
-        root="./data/mnist", train=False, download=True, transform=tx
-    )
-    res = (trainDs, testDs)
-    return res
+# Load data (each client will load its own data in a real FL scenario)
+def load_data(transform, datasets='MNIST'):
+    if datasets == 'MNIST':
+        train_dataset = torchvision.datasets.MNIST(
+            root="./data/mnist", train=True, download=True, transform=transform)
+        test_dataset = torchvision.datasets.MNIST(
+            root="./data/mnist", train=False, download=True, transform=transform)
+    else:
+        train_dataset = torchvision.datasets.CIFAR10(
+            root="./data/cifar-10-python", train=True, download=True, transform=transform)
+        test_dataset = torchvision.datasets.CIFAR10(
+            root="./data/cifar-10-python", train=False, download=True, transform=transform)
+
+    return train_dataset, test_dataset
 
 
-def partitionDataset(ds, numClients=10, seed=42):
-    sz = len(ds) // numClients
-    splits = []
-    for _ in range(numClients):
-        splits.append(sz)
+# Split the dataset into 'n_clients' partitions
+def partition_dataset(dataset, n_clients=10, seed=42):
+    split_size = len(dataset) // n_clients
     g = torch.Generator()
     g.manual_seed(seed)
-    subsets = random_split(ds, splits, generator=g)
-    return subsets
+    return random_split(dataset, [split_size] * n_clients, generator=g)
 
 
-def clientUpdate(cNet, opt, cLdr, dev, ep=1):
-    cNet.train()
-    lossFn = nn.CrossEntropyLoss()
-    for _ in range(ep):
-        for data, lbls in cLdr:
-            x = data.to(dev)
-            y = lbls.to(dev)
-            opt.zero_grad()
-            out = cNet(x)
-            loss = lossFn(out, y)
+# Client-side local training
+def client_update(client_model, optimizer, train_loader, device, epochs=1):
+    client_model.train()
+    loss_fn = nn.CrossEntropyLoss()
+    for _ in range(epochs):
+        for data, labels in train_loader:
+            data, labels = data.to(device), labels.to(device)
+            optimizer.zero_grad()
+            output = client_model(data)
+            loss = loss_fn(output, labels)
             loss.backward()
-            opt.step()
+            optimizer.step()
 
 
-def trimmedMean(cNets, bIdxs, trimRatio=0.1):
-    states = []
-    for i in bIdxs:
-        s = cNets[i].state_dict()
-        states.append(s)
-
+# Coordinate-wise Trimmed Mean aggregation
+def trimmed_mean(client_models, benign_indices, trim_ratio=0.1):
+    states = [client_models[i].state_dict() for i in benign_indices]
     n = len(states)
     if n <= 2:
         avg = {}
-        for k in states[0].keys():
-            tList = []
-            for s in states:
-                tList.append(s[k].float())
-            stacked = torch.stack(tList, dim=0)
-            avg[k] = stacked.mean(dim=0).to(dtype=states[0][k].dtype)
+        for key in states[0].keys():
+            stacked = torch.stack([s[key].float() for s in states], dim=0)
+            avg[key] = stacked.mean(dim=0).to(dtype=states[0][key].dtype)
         return avg
 
-    # k = max(1, int(n * trimRatio))
-    k = max(0, round(n * trimRatio))
+    k = max(0, round(n * trim_ratio))
     avg = {}
     for key in states[0].keys():
-        tList = []
-        for s in states:
-            tList.append(s[key].float())
-        stacked = torch.stack(tList, dim=0)
-        origShape = stacked.shape[1:]
-        stackedFlat = stacked.view(n, -1)
+        stacked = torch.stack([s[key].float() for s in states], dim=0)
+        orig_shape = stacked.shape[1:]
+        stacked_flat = stacked.view(n, -1)
         if k > 0 and 2 * k < n:
-            sortedFlat, _ = torch.sort(stackedFlat, dim=0)
-            trimmed = sortedFlat[k:n - k]
-            meanFlat = trimmed.mean(dim=0)
+            sorted_flat, _ = torch.sort(stacked_flat, dim=0)
+            trimmed = sorted_flat[k:n - k]
+            mean_flat = trimmed.mean(dim=0)
         else:
-            meanFlat = stackedFlat.mean(dim=0)
-        avg[key] = meanFlat.view(origShape).to(dtype=states[0][key].dtype)
+            mean_flat = stacked_flat.mean(dim=0)
+        avg[key] = mean_flat.view(orig_shape).to(dtype=states[0][key].dtype)
     return avg
 
 
-def detectAndAggregate(gNet, cNets, curRound):
-    gDict = gNet.state_dict()
-    numClients = len(cNets)
+# Server-side defense and aggregation
+def detect_and_aggregate(global_model, client_models, current_round, trim_ratio=0.1, fusion_type="max"):
+    global_dict = global_model.state_dict()
+    num_clients = len(client_models)
 
-    # 0. DEFENSE A: Check for NaN / Inf injection attacks
-    corruptedClients = []
-    for i, c in enumerate(cNets):
-        cDict = c.state_dict()
-        for param in cDict.values():
+    # 0. Check for NaN / Inf injection attacks
+    corrupted_clients = []
+    for i, client in enumerate(client_models):
+        for param in client.state_dict().values():
             if not torch.isfinite(param).all():
-                corruptedClients.append(i)
+                corrupted_clients.append(i)
                 break
 
-    if corruptedClients and curRound >= 2:
-        flaggedClient = corruptedClients[0]
-        print(f"  [Defense] Flagged malicious client: Client {flaggedClient} (detected NaN/Inf values)")
-        bIdxs = []
-        for i in range(numClients):
-            if i != flaggedClient:
-                bIdxs.append(i)
-        newGDict = trimmedMean(cNets, bIdxs, trimRatio=0.1)
-        gNet.load_state_dict(newGDict)
-        gState = gNet.state_dict()
-        for c in cNets:
-            c.load_state_dict(gState)
-        return flaggedClient
+    if corrupted_clients and current_round >= 2:
+        flagged_client = corrupted_clients[0]
+        print(f"  [Defense] Flagged malicious client: Client {flagged_client} (detected NaN/Inf values)")
+        benign_indices = [i for i in range(num_clients) if i != flagged_client]
+        new_global_dict = trimmed_mean(client_models, benign_indices, trim_ratio=trim_ratio)
+        global_model.load_state_dict(new_global_dict)
+        for client in client_models:
+            client.load_state_dict(global_model.state_dict())
+        return flagged_client
 
-    # 1. GET DELTA VECTORS FOR DEFENSES: Update delta vectors (w_i - w_global)
+    # 1. Update delta vectors (w_i - w_global)
     deltas = []
-    for c in cNets:
-        cDict = c.state_dict()
+    for client in client_models:
+        c_dict = client.state_dict()
         diffs = []
-        for k in gDict.keys():
-            diff = (cDict[k].float() - gDict[k].float().to(cDict[k].device)).reshape(-1)
+        for k in global_dict.keys():
+            diff = (c_dict[k].float() - global_dict[k].float().to(c_dict[k].device)).reshape(-1)
             diffs.append(diff)
-        catDiffs = torch.cat(diffs)
-        deltas.append(catDiffs)
+        deltas.append(torch.cat(diffs))
 
-    # 2. DEFENSE B: L2 norms and median 
-    norms = []
-    for d in deltas:
-        nVal = torch.norm(d).item()
-        norms.append(nVal)
-    # sorted_norms = sorted(norms)
-    # med_norm = sorted_norms[len(sorted_norms) // 2]
-    medNorm = torch.tensor(norms).median().item()
+    # 2. L2 norms and median
+    norms = [torch.norm(d).item() for d in deltas]
+    med_norm = torch.tensor(norms).median().item()
 
-    # 3. DEFENSE C: Pairwise cosine consensus scores
-    cosScores = []
-    for i in range(numClients):
+    # 3. Pairwise cosine consensus scores
+    cos_scores = []
+    for i in range(num_clients):
         sims = []
-        for j in range(numClients):
-            if i != j:  # Only compare to other clients
-                sim = torch.cosine_similarity(deltas[i].unsqueeze(0), deltas[j].unsqueeze(0)).item()  # Unsqueeze needed for pytorch's cosine_similarity.
-                sims.append(sim)
-        simAvg = sum(sims) / len(sims)
-        cosScores.append(simAvg)
-
-    # 4. DEFENSE D: Multi-Krum scores
-    f = 1  # maximum number of attackers.
-    keepNeighbors = max(1, numClients - f - 2)  # Removes more distant clients, reducing outlier impact.
-    krumScores = []
-    for i in range(numClients):
-        # Calculate distances between each client, take norm, and sort smallest to largest.
-        dists = []
-        for j in range(numClients):
+        for j in range(num_clients):
             if i != j:
-                distVal = (deltas[i] - deltas[j]).norm().item()
-                dists.append(distVal)
+                sim = torch.cosine_similarity(deltas[i].unsqueeze(0), deltas[j].unsqueeze(0)).item()
+                sims.append(sim)
+        cos_scores.append(sum(sims) / len(sims))
+
+    # 4. Multi-Krum scores
+    f = 1
+    keep_neighbors = max(1, num_clients - f - 2)
+    krum_scores = []
+    for i in range(num_clients):
+        dists = [(deltas[i] - deltas[j]).norm().item() for j in range(num_clients) if i != j]
         dists.sort()
-        sumNeighbors = sum(dists[:keepNeighbors])  # Sum largest for scores.
-        krumScores.append(sumNeighbors)
+        krum_scores.append(sum(dists[:keep_neighbors]))
 
     def minmax(vals):
         lo, hi = min(vals), max(vals)
-        if hi - lo < 1e-12:  # if values are too close, return 0
-            res = []
-            for _ in range(len(vals)):
-                res.append(0.0)
-            return res
-        res = []
-        for v in vals:
-            normed = (v - lo) / (hi - lo)
-            res.append(normed)
-        return res
+        if hi - lo < 1e-12:
+            return [0.0] * len(vals)
+        return [(v - lo) / (hi - lo) for v in vals]
 
-    invCos = []
-    for c in cosScores:
-        invCos.append(1.0 - c)  # High is good, so invert.
-    cosAnom = minmax(invCos)
+    cos_anom = minmax([1.0 - c for c in cos_scores])
+    l2_anom = minmax([abs(nr - med_norm) / max(med_norm, 1e-12) for nr in norms])
+    krum_anom = minmax(krum_scores)
 
-    l2Diffs = []
-    for nr in norms:
-        diffVal = abs(nr - medNorm) / max(medNorm, 1e-12)
-        l2Diffs.append(diffVal)
-    l2Anom = minmax(l2Diffs)
+    if fusion_type == "mean":
+        combined_scores = [(c + l + k) / 3.0 for c, l, k in zip(cos_anom, l2_anom, krum_anom)]
+    else:
+        combined_scores = [max(c, l, k) for c, l, k in zip(cos_anom, l2_anom, krum_anom)]
 
-    krumAnom = minmax(krumScores)
+    flagged_client = -1
+    if current_round >= 2:
+        hard_outliers = [i for i in range(num_clients) if norms[i] > 3.0 * max(med_norm, 1e-12) or cos_scores[i] < 0.0]
 
-    combinedScores = []
-    for c, l, k in zip(cosAnom, l2Anom, krumAnom):
-        mScore = max(c, l, k)
-        combinedScores.append(mScore)
-    # combinedScores = [mean(c, l, k) for c, l, k in zip(cosAnom, l2Anom, krumAnom)] # ablation test
+        if hard_outliers:
+            hard_outliers.sort(key=lambda idx: combined_scores[idx], reverse=True)
+            flagged_client = hard_outliers[0]
+            flag_type = "hard"
+        else:
+            flagged_client = int(torch.tensor(combined_scores).argmax().item())
+            flag_type = "soft"
 
-    flaggedClient = -1
-    if curRound >= 2:
-        hardOutliers = []
-        for i in range(numClients):  
-            if norms[i] > 3.0 * max(medNorm, 1e-12) or cosScores[i] < 0.0:  # Checks for enormous or opposite direction updates.
-                hardOutliers.append(i)
+        print(f"  [Defense] Flagged malicious client: Client {flagged_client} (norm={norms[flagged_client]:.2f}, cos={cos_scores[flagged_client]:.4f}, type={flag_type})")
 
-        if hardOutliers:
-            hardOutliers.sort(key=lambda idx: combinedScores[idx], reverse=True)
-            flaggedClient = hardOutliers[0]
-            flagType = "hard"
-        else:  # Otherwise, flags the client with the highest anomaly score.
-            flaggedClient = int(torch.tensor(combinedScores).argmax().item())
-            flagType = "soft"
+    benign_indices = [i for i in range(num_clients) if i != flagged_client]
+    print(f"  [Server] Robust aggregation (Trimmed Mean) over {len(benign_indices)} benign clients...")
 
-        print(f"  [Defense] Flagged malicious client: Client {flaggedClient} (norm={norms[flaggedClient]:.2f}, cos={cosScores[flaggedClient]:.4f}, type={flagType})")
+    new_global_dict = trimmed_mean(client_models, benign_indices, trim_ratio=trim_ratio)
+    global_model.load_state_dict(new_global_dict)
 
-    bIdxs = []
-    for i in range(numClients):
-        if i != flaggedClient:
-            bIdxs.append(i)
-    print(f"  [Server] Robust aggregation (Trimmed Mean) over {len(bIdxs)} benign clients...")
+    for client in client_models:
+        client.load_state_dict(global_model.state_dict())
 
-    newGDict = trimmedMean(cNets, bIdxs, trimRatio=0.1)
-    gNet.load_state_dict(newGDict)
-
-    gState = gNet.state_dict()
-    for c in cNets:
-        c.load_state_dict(gState)
-
-    return flaggedClient
+    return flagged_client
 
 
-def testModel(net, tLdr, dev):
-    net.eval()
-    cor = 0
-    tot = 0
+# Test model on test dataset
+def test_model(model, test_loader, device):
+    model.eval()
+    correct, total = 0, 0
     with torch.no_grad():
-        for data, lbls in tLdr:
-            x = data.to(dev)
-            y = lbls.to(dev)
-            out = net(x)
-            _, pred = torch.max(out, 1)
-            tot += y.size(0)
-            cor += (pred == y).sum().item()
-    acc = cor / tot
-    return acc
+        for data, labels in test_loader:
+            data, labels = data.to(device), labels.to(device)
+            output = model(data)
+            _, predicted = torch.max(output, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+    return correct / total
 
 
-def main():
-    setSeed(42)
+# Robust Federated Learning process
+def federated_learning(n_clients=10, global_epochs=10, local_epochs=1, model_type="wide", trim_ratio=0.1, fusion_type="max"):
+    set_seed(42)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print("Using device:", device)
 
-    dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {dev}")
+    malicious_client_id = 9
+    attack_start_round = 2
+    checkpoint_path = "best_model.pth"
 
-    # Model choice: "wide" (LeNetWide32, primary) or "lenet5" (baseline)
-    mType = "lenet5"
-    numClients = 10
-    malClientId = 9
-    atkStartRound = 2
-    gEpochs = 10
-    locEpochs = 1
-    lr = 0.0005
-    ckptPath = "best_model.pth"
+    # Set up data transformation and load dataset
+    transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])
+    train_dataset, test_dataset = load_data(transform)
 
-    tx = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.5,), (0.5,))
-    ])
-    datasets = loadData(tx)
-    trainDs = datasets[0]
-    testDs = datasets[1]
-
-    clientDsList = partitionDataset(trainDs, numClients, seed=42)
-    cLdrs = []
+    # Partition dataset for each client
+    client_datasets = partition_dataset(train_dataset, n_clients, seed=42)
     g = torch.Generator()
     g.manual_seed(42)
-    for ds in clientDsList:
-        cLdr = DataLoader(ds, batch_size=50, shuffle=True, generator=g)
-        cLdrs.append(cLdr)
+    client_loaders = [DataLoader(dataset, batch_size=50, shuffle=True, generator=g) for dataset in client_datasets]
+    test_loader = DataLoader(test_dataset, batch_size=1000, shuffle=False)
 
-    testLdr = DataLoader(testDs, batch_size=1000, shuffle=False)
-
-    if mType == "lenet5":
-        gNet = LeNet5().to(dev)
+    # Initialize global model and client models
+    if model_type == "lenet5":
+        global_model = LeNet5().to(device)
+    elif model_type == "mlp":
+        global_model = SimpleMLP().to(device)
     else:
-        gNet = LeNetWide32().to(dev)
+        global_model = ConvNet().to(device)
 
-    print(f"--- Running Level 3 Exp 10 (model=LeNet5, pool=avg, trim_ratio=0.1, fusion=max, rounds={gEpochs}) ---")
-    cNets = []
-    opts = []
-    for _ in range(numClients):
-        copiedNet = copy.deepcopy(gNet)
-        opt = torch.optim.Adam(copiedNet.parameters(), lr=lr)
-        cNets.append(copiedNet)
-        opts.append(opt)
+    print(f"--- Running Level 3 (model={global_model.__class__.__name__}, trim_ratio={trim_ratio}, fusion={fusion_type}, rounds={global_epochs}) ---")
 
-    bestAcc = 0.0
-    caughtRounds = []
+    client_models = [copy.deepcopy(global_model) for _ in range(n_clients)]
+    optimizers = [torch.optim.Adam(model.parameters(), lr=0.0005) for model in client_models]
+
+    best_accuracy = 0.0
+    caught_rounds = []
 
     print("Starting Level 3 Robust Federated Learning...")
-    for r in range(1, gEpochs + 1):
-        print(f"\nGlobal Round {r}/{gEpochs}")
+    for round_num in range(1, global_epochs + 1):
+        print(f"\nGlobal Round {round_num}/{global_epochs}")
 
-        for idx in range(numClients):
-            if idx == malClientId and r >= atkStartRound:
+        for idx in range(n_clients):
+            if idx == malicious_client_id and round_num >= attack_start_round:
                 # === MALICIOUS CLIENT LOGIC HERE ===
-                gState = gNet.state_dict()
-                malState = generate_malicious_update(
-                    gState,
-                    clientDsList[idx],
-                    dev
-                )
-                cNets[idx].load_state_dict(malState)
+                g_state = global_model.state_dict()
+                mal_state = generate_malicious_update(g_state, client_datasets[idx], device)
+                client_models[idx].load_state_dict(mal_state)
             else:
-                clientUpdate(cNets[idx], opts[idx], cLdrs[idx], dev, locEpochs)
+                client_update(client_models[idx], optimizers[idx], client_loaders[idx], device, local_epochs)
 
-        detectedId = detectAndAggregate(gNet, cNets, r)
+        detected_id = detect_and_aggregate(global_model, client_models, round_num, trim_ratio=trim_ratio, fusion_type=fusion_type)
 
-        if r >= atkStartRound:
-            if detectedId == malClientId:
-                caughtRounds.append(r)
-                print(f"  [Result] Success: Correctly identified malicious client {malClientId}!")
+        if round_num >= attack_start_round:
+            if detected_id == malicious_client_id:
+                caught_rounds.append(round_num)
+                print(f"  [Result] Success: Correctly identified malicious client {malicious_client_id}!")
             else:
-                print(f"  [Result] Warning: Injected client was {malClientId}, but flagged client was {detectedId}")
+                print(f"  [Result] Warning: Injected client was {malicious_client_id}, but flagged client was {detected_id}")
 
-        acc = testModel(gNet, testLdr, dev)
-        print(f"Global Model Test Accuracy after round {r}: {acc:.4f} ({acc:.2%})")
+        test_accuracy = test_model(global_model, test_loader, device)
+        print(f"Global Model Test Accuracy after round {round_num}: {test_accuracy:.4f} ({test_accuracy:.2%})")
 
-        if acc > bestAcc:
-            bestAcc = acc
-            torch.save(gNet.state_dict(), ckptPath)
-            print(f"Saved best model with accuracy {bestAcc:.2%} to {ckptPath}")
+        if test_accuracy > best_accuracy:
+            best_accuracy = test_accuracy
+            torch.save(global_model.state_dict(), checkpoint_path)
+            print(f"Saved best model with accuracy {best_accuracy:.2%} to {checkpoint_path}")
 
-    torch.save(gNet.state_dict(), 'robust_federated_model.pth')
-    print(f"\nTraining completed. Malicious client caught in rounds: {caughtRounds}")
-    print(f"Best Test Accuracy: {bestAcc:.2%}")
+    torch.save(global_model.state_dict(), 'robust_federated_model.pth')
+    print(f"\nTraining completed. Malicious client caught in rounds: {caught_rounds}")
+    print(f"Best Test Accuracy: {best_accuracy:.2%}")
 
 
 if __name__ == '__main__':
-    main()
+    federated_learning(n_clients=10, global_epochs=10, local_epochs=1, model_type="lenet5", trim_ratio=0.1, fusion_type="max")
