@@ -4,25 +4,25 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from models import LeNetWide32, LeNet5, SimpleMLP
+from models import LeNetWide32, LeNet5
 
 # Attack selection:
-# 'random' | 'sign_flip' | 'gaussian' | 'scale' | 'label_flip' | 'benign'
+# 'random', 'sign_flip', 'gaussian', 'scale', 'label_flip',  'benign'
 ATTACK_TYPE = "random"
 ATTACK_SCALE = 10.0
 
 # Silent period: number of rounds to wait after round 2 before starting attack.
-# Set to an integer (0 = starts at round 2, 2 = starts at round 4), or None for random (0 to 3 rounds).
+# Set to an integer 0 starts at round 2, 1 starts at round 3 etc
 SILENT_PERIOD = None
 callCount = 0
 silentRounds = None
 
 
 def getLocalTrainedState(gState, localDs, dev, labelFlip=False):
-    # Detect whether global model is SimpleMLP, LeNet5, or LeNetWide32
-    if "conv1.weight" not in gState:
-        net = SimpleMLP().to(dev)
-    elif "fc1.weight" in gState and gState["fc1.weight"].shape[0] == 120:
+    '''This is needed for label/sign flipping attacks because they require local training. Our gaussian and scaling attacks do not retrain, but instead just attack the global parameters directly.
+    '''
+    # Detect whether global model is LeNet5 or LeNetWide32 from parameter shapes
+    if "fc1.weight" in gState and gState["fc1.weight"].shape[0] == 120:
         net = LeNet5().to(dev)
     else:
         net = LeNetWide32().to(dev)
@@ -78,10 +78,7 @@ def generate_malicious_update(client_model_state_dict, local_dataset, device):
     # If within silent period, behave benignly (lying low)
     if callCount <= silentRounds:
         print(f"  [Simulated Malicious Client] In silent period (call {callCount}/{silentRounds}); behaving benignly.")
-        trained = getLocalTrainedState(gState, local_dataset, device)
-        res = {}
-        for k, v in trained.items():
-            res[k] = v.detach().cpu()
+        res = getLocalTrainedState(gState, local_dataset, device)
         return res
 
     atk = ATTACK_TYPE.lower()
@@ -94,45 +91,37 @@ def generate_malicious_update(client_model_state_dict, local_dataset, device):
 
     # 1. Benign mode (no attack this round)
     if atk == "benign":
-        trained = getLocalTrainedState(gState, local_dataset, device)
-        res = {}
-        for k, v in trained.items():
-            res[k] = v.detach().cpu()
+        res = getLocalTrainedState(gState, local_dataset, device)
         return res
 
     # 2. Gaussian noise attack
     if atk == "gaussian":
         out = {}
-        for k, param in gState.items():
-            p = param.to(device).float()
-            scale = p.std().clamp(min=1e-3) * ATTACK_SCALE
+        for k, params in gState.items():
+            scale = params.std().clamp(min=1e-3) * ATTACK_SCALE # min >0 here ensures that some attack is applied under all cases
             noise = torch.randn_like(p) * scale
-            out[k] = (p + noise).cpu()
+            out[k] = p + noise
         return out
 
     # 3. Scaling attack
     if atk == "scale":
         out = {}
-        for k, v in gState.items():
-            scaled = (v.to(device).float() * ATTACK_SCALE).detach().cpu()
-            out[k] = scaled
+        for k, params in gState.items():
+            out[k] = params * ATTACK_SCALE
         return out
 
     # 4. Sign-flipping attack
     if atk == "sign_flip":
         trained = getLocalTrainedState(gState, local_dataset, device)
         out = {}
-        for k in gState.keys():
-            flipped = (2 * gState[k].to(device) - trained[k].to(device)).detach().cpu()
-            out[k] = flipped
+        for k in gState:
+            delta = trained[k] - gState[k]
+            out[k] = gState[k] - delta
         return out
 
     # 5. Label-flipping attack
     if atk == "label_flip":
         trained = getLocalTrainedState(gState, local_dataset, device, labelFlip=True)
-        res = {}
-        for k, v in trained.items():
-            res[k] = v.detach().cpu()
         return res
 
     raise ValueError(f"Unknown ATTACK_TYPE={atk!r}")
