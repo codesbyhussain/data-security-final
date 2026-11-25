@@ -163,12 +163,17 @@ def detect_and_aggregate(global_model, client_models, current_round, trim_ratio=
         hard_outliers = [i for i in range(num_clients) if norms[i] > 3.0 * max(med_norm, 1e-12) or cos_scores[i] < 0.0]
 
         if hard_outliers:
-            hard_outliers.sort(key=lambda idx: combined_scores[idx], reverse=True)
-            flagged_client = hard_outliers[0]
+            candidates = hard_outliers
             flag_type = "hard"
         else:
-            flagged_client = int(torch.tensor(combined_scores).argmax().item())
+            candidates = range(num_clients)
             flag_type = "soft"
+        
+        flagged_client = candidates[0]
+
+        for i in candidates:
+            if combined_scores[i] > combined_scores[flagged_client]:
+                flagged_client = i
 
         print(f"  [Defense] Flagged malicious client: Client {flagged_client} (norm={norms[flagged_client]:.2f}, cos={cos_scores[flagged_client]:.4f}, type={flag_type})")
 
