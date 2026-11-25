@@ -1,6 +1,8 @@
 '''Level 1 centralized training.'''
 
 import os
+import random
+import numpy as np
 import torch
 import torch.nn as nn
 import torchvision
@@ -10,98 +12,120 @@ from torch.utils.data import DataLoader
 from models import LeNetWide32, LeNet5, SimpleMLP
 
 
-def load_data(batch_size=50):
-    transform = transforms.Compose([
+def setSeed(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+def loadData(bs=50, seed=42):
+    tx = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.5,), (0.5,))
     ])
 
-    train_dataset = torchvision.datasets.MNIST(root="./data/mnist", train=True, download=True, transform=transform)
-    test_dataset = torchvision.datasets.MNIST(root="./data/mnist", train=False, download=True, transform=transform)
+    trainDs = torchvision.datasets.MNIST(root="./data/mnist", train=True, download=True, transform=tx)
+    testDs = torchvision.datasets.MNIST(root="./data/mnist", train=False, download=True, transform=tx)
 
-    print("The number of training data:", len(train_dataset))
-    print("The number of testing data:", len(test_dataset))
+    print("The number of training data:", len(trainDs))
+    print("The number of testing data:", len(testDs))
 
-    train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
-    test_loader = DataLoader(dataset=test_dataset, batch_size=len(test_dataset), shuffle=False)
+    g = torch.Generator()
+    g.manual_seed(seed)
 
-    print(f"training has: {len(train_loader)} batch of data!")
-    print(f"testing has: {len(test_loader)} batch of data!")
-    return train_loader, test_loader
+    trainLdr = DataLoader(dataset=trainDs, batch_size=bs, shuffle=True, generator=g)
+    testLdr = DataLoader(dataset=testDs, batch_size=len(testDs), shuffle=False)
+
+    print(f"training has: {len(trainLdr)} batch of data!")
+    print(f"testing has: {len(testLdr)} batch of data!")
+    res = (trainLdr, testLdr)
+    return res
 
 
 def main():
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
+    setSeed(42)
+    dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {dev}")
 
     # Model choice: "wide" (LeNetWide32, primary), "lenet5" (baseline), or "mlp" (SimpleMLP)
-    model_type = "wide"
-    learning_rate = 0.0005
-    epochs = 5
-    batch_size = 50
-    checkpoint_path = "best_model.pth"
+    mType = "wide"
+    lr = 0.0005
+    nEpochs = 5
+    bs = 50
+    ckptPath = "best_model.pth"
 
-    train_loader, test_loader = load_data(batch_size=batch_size)
+    dataLdrs = loadData(bs=bs)
+    trainLdr = dataLdrs[0]
+    testLdr = dataLdrs[1]
 
-    if model_type == "lenet5":
-        model = LeNet5().to(device)
-    elif model_type == "mlp":
-        model = SimpleMLP().to(device)
+    if mType == "lenet5":
+        net = LeNet5().to(dev)
+    elif mType == "mlp":
+        net = SimpleMLP().to(dev)
     else:
-        model = LeNetWide32().to(device)
+        net = LeNetWide32().to(dev)
 
-    print(f"Training model: {model.__class__.__name__}")
-    criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    print(f"--- Running Level 1 (model={net.__class__.__name__}, epochs={nEpochs}, bs={bs}, lr={lr}) ---")
 
-    best_accuracy = 0.0
+    print(f"Training model: {net.__class__.__name__}")
+    crit = nn.CrossEntropyLoss()
+    opt = torch.optim.Adam(net.parameters(), lr=lr)
 
-    for epoch in range(epochs):
-        model.train()
-        running_loss = 0.0
-        running_acc = 0.0
+    bestAcc = 0.0
 
-        for i, (features, labels) in enumerate(train_loader):
-            features = features.to(device)
-            labels = labels.to(device)
+    for ep in range(nEpochs):
+        net.train()
+        runLoss = 0.0
+        runAcc = 0.0
 
-            optimizer.zero_grad()
-            preds = model(features)
-            loss = criterion(preds, labels)
+        for i, batch in enumerate(trainLdr):
+            x = batch[0].to(dev)
+            y = batch[1].to(dev)
+
+            opt.zero_grad()
+            out = net(x)
+            loss = crit(out, y)
             loss.backward()
-            optimizer.step()
+            opt.step()
 
-            running_loss += loss.item()
-            _, predicted = torch.max(preds, 1)
-            running_acc += (predicted == labels).sum().item() / labels.size(0)
+            runLoss += loss.item()
+            _, pred = torch.max(out, 1)
+            eq = (pred == y).sum().item()
+            cnt = y.size(0)
+            accVal = eq / cnt
+            runAcc += accVal
 
             if i % 100 == 99:
-                print(f"epoch: {epoch + 1}, batch: {i + 1}, loss: {(running_loss / 100):.6f}, acc: {(running_acc / 100):.2%}")
-                running_loss = 0.0
-                running_acc = 0.0
+                avgL = runLoss / 100
+                avgA = runAcc / 100
+                print(f"epoch: {ep + 1}, batch: {i + 1}, loss: {avgL:.6f}, acc: {avgA:.2%}")
+                runLoss = 0.0
+                runAcc = 0.0
 
         # Evaluate on test set after epoch
-        model.eval()
-        correct = 0
-        total = 0
+        net.eval()
+        cor = 0
+        tot = 0
         with torch.no_grad():
-            for test_features, test_labels in test_loader:
-                test_features = test_features.to(device)
-                test_labels = test_labels.to(device)
-                preds = model(test_features)
-                _, predicted = torch.max(preds, 1)
-                correct += (predicted == test_labels).sum().item()
-                total += test_labels.size(0)
+            for tBatch in testLdr:
+                tx = tBatch[0].to(dev)
+                ty = tBatch[1].to(dev)
+                tOut = net(tx)
+                _, tPred = torch.max(tOut, 1)
+                cor += (tPred == ty).sum().item()
+                tot += ty.size(0)
 
-        epoch_acc = correct / total
-        print(f"Epoch {epoch + 1} test accuracy: {epoch_acc:.2%}")
+        epAcc = cor / tot
+        print(f"Epoch {ep + 1} test accuracy: {epAcc:.2%}")
 
-        if epoch_acc > best_accuracy:
-            best_accuracy = epoch_acc
-            torch.save(model.state_dict(), checkpoint_path)
-            print(f"Saved best model with accuracy: {best_accuracy:.2%} to {checkpoint_path}")
-
-    print(f"\nTraining completed. Best accuracy: {best_accuracy:.2%}")
+        if epAcc > bestAcc:
+            bestAcc = epAcc
+            torch.save(net.state_dict(), ckptPath)
+            print(f"Saved best model with accuracy: {bestAcc:.2%} to {ckptPath}")
 
 
 if __name__ == "__main__":

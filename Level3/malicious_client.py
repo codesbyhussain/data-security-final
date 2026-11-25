@@ -14,34 +14,36 @@ ATTACK_SCALE = 10.0
 # Silent period: number of rounds to wait after round 2 before starting attack.
 # Set to an integer (0 = starts at round 2, 2 = starts at round 4), or None for random (0 to 3 rounds).
 SILENT_PERIOD = None
-call_count = 0
-silent_rounds = None
+callCount = 0
+silentRounds = None
 
 
-def _get_local_trained_state(global_state, local_dataset, device, label_flip=False):
+def getLocalTrainedState(gState, localDs, dev, labelFlip=False):
     # Detect whether global model is LeNet5 or LeNetWide32 from parameter shapes
-    if "fc1.weight" in global_state and global_state["fc1.weight"].shape[0] == 120:
-        model = LeNet5().to(device)
+    if "fc1.weight" in gState and gState["fc1.weight"].shape[0] == 120:
+        net = LeNet5().to(dev)
     else:
-        model = LeNetWide32().to(device)
+        net = LeNetWide32().to(dev)
 
-    model.load_state_dict(global_state)
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.0005)
-    loader = DataLoader(local_dataset, batch_size=50, shuffle=True)
+    net.load_state_dict(gState)
+    opt = torch.optim.Adam(net.parameters(), lr=0.0005)
+    ldr = DataLoader(localDs, batch_size=50, shuffle=True)
 
-    model.train()
-    for xb, yb in loader:
-        xb = xb.to(device)
-        yb = yb.to(device)
-        if label_flip:
+    net.train()
+    for batch in ldr:
+        xb = batch[0].to(dev)
+        yb = batch[1].to(dev)
+        if labelFlip:
             yb = 9 - yb
 
-        loss = F.cross_entropy(model(xb), yb)
+        out = net(xb)
+        loss = F.cross_entropy(out, yb)
         loss.backward()
-        optimizer.step()
-        optimizer.zero_grad()
+        opt.step()
+        opt.zero_grad()
 
-    return model.state_dict()
+    trainedState = net.state_dict()
+    return trainedState
 
 
 def generate_malicious_update(client_model_state_dict, local_dataset, device):
@@ -55,66 +57,80 @@ def generate_malicious_update(client_model_state_dict, local_dataset, device):
     """
     # === STUDENTS: IMPLEMENT YOUR SIMULATED ATTACK BELOW ===
     # === MALICIOUS CLIENT LOGIC HERE ===
-    global call_count, silent_rounds
-    call_count += 1
+    global callCount, silentRounds
+    callCount += 1
 
     # Determine silent period on first invocation
-    if silent_rounds is None:
+    if silentRounds is None:
         if SILENT_PERIOD is None:
-            silent_rounds = random.randint(0, 3)
+            silentRounds = random.randint(0, 3)
         else:
-            silent_rounds = SILENT_PERIOD
-        attack_start_round = 2 + silent_rounds
-        print(f"  [Simulated Malicious Client] Configured silent period: {silent_rounds} round(s). Attack will start in Round {attack_start_round}.")
+            silentRounds = SILENT_PERIOD
+        atkStartRound = 2 + silentRounds
+        print(f"  [Simulated Malicious Client] Configured silent period: {silentRounds} round(s). Attack will start in Round {atkStartRound}.")
 
-    global_state = {k: v.detach().clone() for k, v in client_model_state_dict.items()}
+    gState = {}
+    for k, v in client_model_state_dict.items():
+        gState[k] = v.detach().clone()
 
     # If within silent period, behave benignly (lying low)
-    if call_count <= silent_rounds:
-        print(f"  [Simulated Malicious Client] In silent period (call {call_count}/{silent_rounds}); behaving benignly.")
-        trained = _get_local_trained_state(global_state, local_dataset, device)
-        return {k: v.detach().cpu() for k, v in trained.items()}
+    if callCount <= silentRounds:
+        print(f"  [Simulated Malicious Client] In silent period (call {callCount}/{silentRounds}); behaving benignly.")
+        trained = getLocalTrainedState(gState, local_dataset, device)
+        res = {}
+        for k, v in trained.items():
+            res[k] = v.detach().cpu()
+        return res
 
-    attack = ATTACK_TYPE.lower()
+    atk = ATTACK_TYPE.lower()
 
     # Dynamic selection across baseline attacks and benign
-    if attack == "random":
-        attack_pool = ["sign_flip", "gaussian", "scale", "label_flip", "benign"]
-        attack = random.choice(attack_pool)
-        print(f"  [Simulated Malicious Client] Executing attack: {attack}")
+    if atk == "random":
+        atkPool = ["sign_flip", "gaussian", "scale", "label_flip", "benign"]
+        atk = random.choice(atkPool)
+        print(f"  [Simulated Malicious Client] Executing attack: {atk}")
 
     # 1. Benign mode (no attack this round)
-    if attack == "benign":
-        trained = _get_local_trained_state(global_state, local_dataset, device)
-        return {k: v.detach().cpu() for k, v in trained.items()}
+    if atk == "benign":
+        trained = getLocalTrainedState(gState, local_dataset, device)
+        res = {}
+        for k, v in trained.items():
+            res[k] = v.detach().cpu()
+        return res
 
     # 2. Gaussian noise attack
-    if attack == "gaussian":
+    if atk == "gaussian":
         out = {}
-        for key, param in global_state.items():
+        for k, param in gState.items():
             p = param.to(device).float()
             scale = p.std().clamp(min=1e-3) * ATTACK_SCALE
-            out[key] = (p + torch.randn_like(p) * scale).cpu()
+            noise = torch.randn_like(p) * scale
+            out[k] = (p + noise).cpu()
         return out
 
     # 3. Scaling attack
-    if attack == "scale":
-        return {
-            k: (v.to(device).float() * ATTACK_SCALE).detach().cpu()
-            for k, v in global_state.items()
-        }
+    if atk == "scale":
+        out = {}
+        for k, v in gState.items():
+            scaled = (v.to(device).float() * ATTACK_SCALE).detach().cpu()
+            out[k] = scaled
+        return out
 
     # 4. Sign-flipping attack
-    if attack == "sign_flip":
-        trained = _get_local_trained_state(global_state, local_dataset, device)
-        return {
-            k: (2 * global_state[k].to(device) - trained[k].to(device)).detach().cpu()
-            for k in global_state
-        }
+    if atk == "sign_flip":
+        trained = getLocalTrainedState(gState, local_dataset, device)
+        out = {}
+        for k in gState.keys():
+            flipped = (2 * gState[k].to(device) - trained[k].to(device)).detach().cpu()
+            out[k] = flipped
+        return out
 
     # 5. Label-flipping attack
-    if attack == "label_flip":
-        trained = _get_local_trained_state(global_state, local_dataset, device, label_flip=True)
-        return {k: v.detach().cpu() for k, v in trained.items()}
+    if atk == "label_flip":
+        trained = getLocalTrainedState(gState, local_dataset, device, labelFlip=True)
+        res = {}
+        for k, v in trained.items():
+            res[k] = v.detach().cpu()
+        return res
 
-    raise ValueError(f"Unknown ATTACK_TYPE={attack!r}")
+    raise ValueError(f"Unknown ATTACK_TYPE={atk!r}")

@@ -10,55 +10,56 @@ from torch.utils.data import DataLoader
 from models import LeNetWide32, LeNet5, SimpleMLP
 
 
-def load_test_data():
-    transform = transforms.Compose([
+def loadTestData():
+    tx = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.5,), (0.5,))
     ])
 
-    test_dataset = torchvision.datasets.MNIST(root="./data/mnist", train=False, download=True, transform=transform)
-    test_loader = DataLoader(dataset=test_dataset, batch_size=len(test_dataset), shuffle=False)
-    print("The number of testing data:", len(test_dataset))
-    return test_loader
+    testDs = torchvision.datasets.MNIST(root="./data/mnist", train=False, download=True, transform=tx)
+    testLdr = DataLoader(dataset=testDs, batch_size=len(testDs), shuffle=False)
+    print("The number of testing data:", len(testDs))
+    return testLdr
 
 
 def main():
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # Model choice: "wide" (LeNetWide32, primary), "lenet5" (baseline), or "mlp" (SimpleMLP)
-    model_type = "wide"
-    checkpoint_path = "best_model.pth"
+    mType = "wide"
+    ckptPath = "best_model.pth"
 
-    if not os.path.exists(checkpoint_path):
-        print(f"Checkpoint {checkpoint_path} not found. Please run train.py first.")
+    if not os.path.exists(ckptPath):
+        print(f"Checkpoint {ckptPath} not found. Please run train.py first.")
         return
 
-    test_loader = load_test_data()
+    testLdr = loadTestData()
 
-    if model_type == "lenet5":
-        model = LeNet5().to(device)
-    elif model_type == "mlp":
-        model = SimpleMLP().to(device)
+    if mType == "lenet5":
+        net = LeNet5().to(dev)
+    elif mType == "mlp":
+        net = SimpleMLP().to(dev)
     else:
-        model = LeNetWide32().to(device)
+        net = LeNetWide32().to(dev)
 
-    model.load_state_dict(torch.load(checkpoint_path, map_location=device, weights_only=True))
-    model.eval()
+    loadedWeights = torch.load(ckptPath, map_location=dev, weights_only=True)
+    net.load_state_dict(loadedWeights)
+    net.eval()
 
-    correct = 0
-    total = 0
+    cor = 0
+    tot = 0
 
     with torch.no_grad():
-        for test_features, test_labels in test_loader:
-            test_features = test_features.to(device)
-            test_labels = test_labels.to(device)
-            preds = model(test_features)
-            _, predicted = torch.max(preds, 1)
-            correct += (predicted == test_labels).sum().item()
-            total += test_labels.size(0)
+        for batch in testLdr:
+            x = batch[0].to(dev)
+            y = batch[1].to(dev)
+            out = net(x)
+            _, pred = torch.max(out, 1)
+            cor += (pred == y).sum().item()
+            tot += y.size(0)
 
-    accuracy = correct / total
-    print(f"Test Accuracy ({model.__class__.__name__}): {accuracy:.2%} ({correct}/{total})")
+    acc = cor / tot
+    print(f"Test Accuracy ({net.__class__.__name__}): {acc:.2%} ({cor}/{tot})")
 
 
 if __name__ == "__main__":

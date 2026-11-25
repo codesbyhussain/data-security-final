@@ -1,119 +1,166 @@
 '''Level 2 federated learning training.'''
 
 import copy
+import random
+import numpy as np
 import torch
 import torch.nn as nn
 import torchvision
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader, random_split
 
-from models import LeNetWide32, LeNet5
+from models import LeNetWide32, LeNet5, SimpleMLP, LeNetWide32Avg
 
 
-def load_data(transform):
-    train_dataset = torchvision.datasets.MNIST(
-        root="./data/mnist", train=True, download=True, transform=transform
+def setSeed(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+def loadData(tx):
+    trainDs = torchvision.datasets.MNIST(
+        root="./data/mnist", train=True, download=True, transform=tx
     )
-    test_dataset = torchvision.datasets.MNIST(
-        root="./data/mnist", train=False, download=True, transform=transform
+    testDs = torchvision.datasets.MNIST(
+        root="./data/mnist", train=False, download=True, transform=tx
     )
-    return train_dataset, test_dataset
+    res = (trainDs, testDs)
+    return res
 
 
-def partition_dataset(dataset, n_clients=10):
-    split_size = len(dataset) // n_clients
-    return random_split(dataset, [split_size] * n_clients)
+def partitionDataset(ds, numClients=10, seed=42):
+    sz = len(ds) // numClients
+    splits = []
+    for _ in range(numClients):
+        splits.append(sz)
+    g = torch.Generator()
+    g.manual_seed(seed)
+    subsets = random_split(ds, splits, generator=g)
+    return subsets
 
 
-def client_update(client_model, optimizer, train_loader, device, epochs=1):
-    client_model.train()
-    loss_fn = nn.CrossEntropyLoss()
-    for _ in range(epochs):
-        for data, labels in train_loader:
-            data, labels = data.to(device), labels.to(device)
-            optimizer.zero_grad()
-            output = client_model(data)
-            loss = loss_fn(output, labels)
+def clientUpdate(cNet, opt, cLdr, dev, ep=1):
+    cNet.train()
+    lossFn = nn.CrossEntropyLoss()
+    for _ in range(ep):
+        for data, lbls in cLdr:
+            x = data.to(dev)
+            y = lbls.to(dev)
+            opt.zero_grad()
+            out = cNet(x)
+            loss = lossFn(out, y)
             loss.backward()
-            optimizer.step()
+            opt.step()
 
 
-def server_aggregate(global_model, client_models):
-    global_dict = global_model.state_dict()
-    for key in global_dict.keys():
-        global_dict[key] = torch.stack(
-            [client_models[i].state_dict()[key].float() for i in range(len(client_models))], dim=0
-        ).mean(dim=0)
-    global_model.load_state_dict(global_dict)
+def serverAggregate(gNet, cNets):
+    gDict = gNet.state_dict()
+    for k in gDict.keys():
+        tList = []
+        for i in range(len(cNets)):
+            cDict = cNets[i].state_dict()
+            t = cDict[k].float()
+            tList.append(t)
+        stacked = torch.stack(tList, dim=0)
+        meanT = stacked.mean(dim=0)
+        gDict[k] = meanT
+    gNet.load_state_dict(gDict)
 
-    for client in client_models:
-        client.load_state_dict(global_model.state_dict())
+    gState = gNet.state_dict()
+    for c in cNets:
+        c.load_state_dict(gState)
 
 
-def test_model(model, test_loader, device):
-    model.eval()
-    correct, total = 0, 0
+def testModel(net, tLdr, dev):
+    net.eval()
+    cor = 0
+    tot = 0
     with torch.no_grad():
-        for data, labels in test_loader:
-            data, labels = data.to(device), labels.to(device)
-            output = model(data)
-            _, predicted = torch.max(output, 1)
-            total += labels.size(0)
-            correct += (predicted == labels).sum().item()
-    return correct / total
+        for data, lbls in tLdr:
+            x = data.to(dev)
+            y = lbls.to(dev)
+            out = net(x)
+            _, pred = torch.max(out, 1)
+            tot += y.size(0)
+            cor += (pred == y).sum().item()
+    acc = cor / tot
+    return acc
 
 
 def main():
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
+    setSeed(42)
+    dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {dev}")
 
-    # Model choice: "wide" (LeNetWide32, primary) or "lenet5" (baseline)
-    model_type = "wide"
-    n_clients = 10
-    global_epochs = 10
-    local_epochs = 1
-    learning_rate = 0.0005
-    checkpoint_path = "best_model.pth"
+    # Model choice: "wide" (LeNetWide32, primary), "lenet5" (baseline), "mlp" (SimpleMLP), "wide_avg" (LeNetWide32Avg)
+    mType = "wide"
+    numClients = 10
+    gEpochs = 10
+    locEpochs = 1
+    lr = 0.0005
+    ckptPath = "best_model.pth"
 
-    transform = transforms.Compose([
+    tx = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.5,), (0.5,))
     ])
-    train_dataset, test_dataset = load_data(transform)
+    datasets = loadData(tx)
+    trainDs = datasets[0]
+    testDs = datasets[1]
 
-    client_datasets = partition_dataset(train_dataset, n_clients)
-    client_loaders = [DataLoader(ds, batch_size=50, shuffle=True) for ds in client_datasets]
-    test_loader = DataLoader(test_dataset, batch_size=1000, shuffle=False)
+    clientDsList = partitionDataset(trainDs, numClients, seed=42)
+    cLdrs = []
+    g = torch.Generator()
+    g.manual_seed(42)
+    for ds in clientDsList:
+        cLdr = DataLoader(ds, batch_size=50, shuffle=True, generator=g)
+        cLdrs.append(cLdr)
 
-    if model_type == "lenet5":
-        global_model = LeNet5().to(device)
+    testLdr = DataLoader(testDs, batch_size=1000, shuffle=False)
+
+    if mType == "lenet5":
+        gNet = LeNet5().to(dev)
+    elif mType == "mlp":
+        gNet = SimpleMLP().to(dev)
+    elif mType == "wide_avg":
+        gNet = LeNetWide32Avg().to(dev)
     else:
-        global_model = LeNetWide32().to(device)
+        gNet = LeNetWide32().to(dev)
 
-    print(f"Federated training with: {global_model.__class__.__name__}")
-    client_models = [copy.deepcopy(global_model) for _ in range(n_clients)]
-    optimizers = [torch.optim.Adam(m.parameters(), lr=learning_rate) for m in client_models]
+    print(f"--- Running Level 2 (model={gNet.__class__.__name__}, clients={numClients}, rounds={gEpochs}) ---")
+    cNets = []
+    opts = []
+    for _ in range(numClients):
+        copiedNet = copy.deepcopy(gNet)
+        opt = torch.optim.Adam(copiedNet.parameters(), lr=lr)
+        cNets.append(copiedNet)
+        opts.append(opt)
 
-    best_accuracy = 0.0
+    bestAcc = 0.0
 
     print("Starting Federated Learning...")
-    for round_num in range(global_epochs):
-        print(f"Global Round {round_num + 1}/{global_epochs}")
+    for r in range(gEpochs):
+        print(f"Global Round {r + 1}/{gEpochs}")
 
-        for idx in range(n_clients):
-            client_update(client_models[idx], optimizers[idx], client_loaders[idx], device, local_epochs)
+        for idx in range(numClients):
+            clientUpdate(cNets[idx], opts[idx], cLdrs[idx], dev, locEpochs)
 
-        server_aggregate(global_model, client_models)
+        serverAggregate(gNet, cNets)
 
-        accuracy = test_model(global_model, test_loader, device)
-        print(f"Round {round_num + 1} Global Test Accuracy: {accuracy:.4f} ({accuracy:.2%})")
+        acc = testModel(gNet, testLdr, dev)
+        print(f"Round {r + 1} Global Test Accuracy: {acc:.4f} ({acc:.2%})")
 
-        if accuracy > best_accuracy:
-            best_accuracy = accuracy
-            torch.save(global_model.state_dict(), checkpoint_path)
-            print(f"Saved best model with accuracy {best_accuracy:.2%} to {checkpoint_path}")
+        if acc > bestAcc:
+            bestAcc = acc
+            torch.save(gNet.state_dict(), ckptPath)
+            print(f"Saved best model with accuracy {bestAcc:.2%} to {ckptPath}")
 
-    print(f"\nFederated training finished. Best Test Accuracy: {best_accuracy:.2%}")
+    print(f"\nFederated training finished. Best Test Accuracy: {bestAcc:.2%}")
 
 
 if __name__ == '__main__':
