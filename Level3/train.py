@@ -68,6 +68,7 @@ def trimmed_mean(client_models, benign_indices, trim_ratio=0.1):
     avg = {}
 
     for key in states[0]: # get the paremeter tensors for each client
+        parameters = []
         for s in states:
             parameters.append(s[key])
         stacked_vals = torch.stack(parameters, dim=0) # stack into a grid
