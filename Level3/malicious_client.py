@@ -99,8 +99,8 @@ def generate_malicious_update(client_model_state_dict, local_dataset, device):
         out = {}
         for k, params in gState.items():
             scale = params.std().clamp(min=1e-3) * ATTACK_SCALE # min >0 here ensures that some attack is applied under all cases
-            noise = torch.randn_like(p) * scale
-            out[k] = p + noise
+            noise = torch.randn_like(params) * scale
+            out[k] = params + noise
         return out
 
     # 3. Scaling attack

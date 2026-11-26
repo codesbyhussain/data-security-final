@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from models import LeNetWide32, LeNet5
+from models import LeNetWide32, LeNet5, SimpleMLP
 
 # Attack selection:
 # 'random', 'sign_flip', 'gaussian', 'scale', 'label_flip',  'benign'
@@ -21,9 +21,11 @@ silentRounds = None
 def getLocalTrainedState(gState, localDs, dev, labelFlip=False):
     '''This is needed for label/sign flipping attacks because they require local training. Our gaussian and scaling attacks do not retrain, but instead just attack the global parameters directly.
     '''
-    # Detect whether global model is LeNet5 or LeNetWide32 from parameter shapes
+    # Detect model type from fc1 out-features 
     if "fc1.weight" in gState and gState["fc1.weight"].shape[0] == 120:
         net = LeNet5().to(dev)
+    elif "fc1.weight" in gState and gState["fc1.weight"].shape[0] == 128:
+        net = SimpleMLP().to(dev)
     else:
         net = LeNetWide32().to(dev)
 

@@ -64,26 +64,19 @@ def client_update(client_model, optimizer, train_loader, device, epochs=1):
 def trimmed_mean(client_models, benign_indices, trim_ratio=0.1):
     states = [client_models[i].state_dict() for i in benign_indices]
     n = len(states)
-    if n <= 2:
-        avg = {}
-        for key in states[0].keys():
-            stacked = torch.stack([s[key].float() for s in states], dim=0)
-            avg[key] = stacked.mean(dim=0).to(dtype=states[0][key].dtype)
-        return avg
-
-    k = max(0, round(n * trim_ratio))
+    k = round(n * trim_ratio) # number of values to remove
     avg = {}
-    for key in states[0].keys():
-        stacked = torch.stack([s[key].float() for s in states], dim=0)
-        orig_shape = stacked.shape[1:]
-        stacked_flat = stacked.view(n, -1)
-        if k > 0 and 2 * k < n:
-            sorted_flat, _ = torch.sort(stacked_flat, dim=0)
-            trimmed = sorted_flat[k:n - k]
-            mean_flat = trimmed.mean(dim=0)
-        else:
-            mean_flat = stacked_flat.mean(dim=0)
-        avg[key] = mean_flat.view(orig_shape).to(dtype=states[0][key].dtype)
+
+    for key in states[0]: # get the paremeter tensors for each client
+        for s in states:
+            parameters.append(s[key])
+        stacked_vals = torch.stack(parameters, dim=0) # stack into a grid
+
+        if k > 0 and 2 * k < n: # if none, skip this step, and 2*k must be less than n to avoid removing all weights.
+            sorted_vals = torch.sort(stacked_vals, dim=0).values
+            stacked_vals = sorted_vals[k:n-k]
+        avg[key] = stacked_vals.mean(dim=0)
+
     return avg
 
 
@@ -115,9 +108,10 @@ def detect_and_aggregate(global_model, client_models, current_round, trim_ratio=
     for client in client_models:
         c_dict = client.state_dict()
         diffs = []
-        for k in global_dict.keys():
-            diff = (c_dict[k].float() - global_dict[k].float().to(c_dict[k].device)).reshape(-1)
+        for k in global_dict:
+            diff = (c_dict[k] - global_dict[k]).flatten() # make 1d
             diffs.append(diff)
+
         deltas.append(torch.cat(diffs))
 
     # 2. L2 norms and median
@@ -130,24 +124,32 @@ def detect_and_aggregate(global_model, client_models, current_round, trim_ratio=
         sims = []
         for j in range(num_clients):
             if i != j:
-                sim = torch.cosine_similarity(deltas[i].unsqueeze(0), deltas[j].unsqueeze(0)).item()
+                sim = torch.cosine_similarity(deltas[i], deltas[j], dim=0).item() # dim=0 because torch looks at dim1 by default
                 sims.append(sim)
         cos_scores.append(sum(sims) / len(sims))
 
     # 4. Multi-Krum scores
-    f = 1
-    keep_neighbors = max(1, num_clients - f - 2)
+    # formula lifted from https://proceedings.neurips.cc/paper/2017/file/f4b9ec30ad9f68f89b29639786cb62ef-Paper.pdf
+    keep_neighbors = 7 # 10 total, -1 for max numof malicious clients, -1 for self comparison, -1 to set upper bound of attacking distance.
     krum_scores = []
     for i in range(num_clients):
-        dists = [(deltas[i] - deltas[j]).norm().item() for j in range(num_clients) if i != j]
+        dists = []
+        for j in range(num_clients):
+            if i != j:
+                dist = torch.norm(deltas[i] - deltas[j]).square().item()
+                dists.append(dist)
         dists.sort()
         krum_scores.append(sum(dists[:keep_neighbors]))
 
     def minmax(vals):
         lo, hi = min(vals), max(vals)
-        if hi - lo < 1e-12:
-            return [0.0] * len(vals)
-        return [(v - lo) / (hi - lo) for v in vals]
+        if hi == lo:
+            return [0.0] * len(vals) # avoid division by zero if high = low
+        normalized = []
+        for v in vals:
+            score = (v - lo) / (hi - lo)
+            normalized.append(score)
+        return normalized
 
     cos_anom = minmax([1.0 - c for c in cos_scores])
     l2_anom = minmax([abs(nr - med_norm) / max(med_norm, 1e-12) for nr in norms])
@@ -155,20 +157,30 @@ def detect_and_aggregate(global_model, client_models, current_round, trim_ratio=
 
     if fusion_type == "mean":
         combined_scores = [(c + l + k) / 3.0 for c, l, k in zip(cos_anom, l2_anom, krum_anom)]
-    else:
+    else: #max
         combined_scores = [max(c, l, k) for c, l, k in zip(cos_anom, l2_anom, krum_anom)]
 
     flagged_client = -1
     if current_round >= 2:
-        hard_outliers = [i for i in range(num_clients) if norms[i] > 3.0 * max(med_norm, 1e-12) or cos_scores[i] < 0.0]
+        hard_outliers = []
+        norm_thres = 3.0 * med_norm #note if med norm is 0, then all non zero norm clients will be "hard", but this is very unlikely
 
-        if hard_outliers:
-            hard_outliers.sort(key=lambda idx: combined_scores[idx], reverse=True)
-            flagged_client = hard_outliers[0]
+        for i in range(num_clients):
+            if norms[i] > norm_thresh or cos_scores[i] < 0:
+                hard_outliers.append(i)
+    
+        if hard_out:
+            candidates = hard_out
             flag_type = "hard"
         else:
-            flagged_client = int(torch.tensor(combined_scores).argmax().item())
+            candidates = range(num_clients)
             flag_type = "soft"
+        
+        flagged_client = candidates[0]
+
+        for i in candidates: # get index of biggest score
+            if combined_scores[i] > combined_scores[flagged_client]:
+                flagged_client = i
 
         print(f"  [Defense] Flagged malicious client: Client {flagged_client} (norm={norms[flagged_client]:.2f}, cos={cos_scores[flagged_client]:.4f}, type={flag_type})")
 
@@ -268,6 +280,7 @@ def federated_learning(n_clients=10, global_epochs=10, local_epochs=1, model_typ
     torch.save(global_model.state_dict(), 'robust_federated_model.pth')
     print(f"\nTraining completed. Malicious client caught in rounds: {caught_rounds}")
     print(f"Best Test Accuracy: {best_accuracy:.2%}")
+
 
 
 if __name__ == '__main__':
