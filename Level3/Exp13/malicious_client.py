@@ -121,7 +121,7 @@ def generate_malicious_update(client_model_state_dict, local_dataset, device):
 
     # 5. Label-flipping attack
     if atk == "label_flip":
-        trained = getLocalTrainedState(gState, local_dataset, device, labelFlip=True)
+        res = getLocalTrainedState(gState, local_dataset, device, labelFlip=True)
         return res
 
     raise ValueError(f"Unknown ATTACK_TYPE={atk!r}")

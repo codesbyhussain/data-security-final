@@ -170,8 +170,8 @@ def detect_and_aggregate(global_model, client_models, current_round, trim_ratio=
             if norms[i] > norm_thresh or cos_scores[i] < 0:
                 hard_outliers.append(i)
     
-        if hard_out:
-            candidates = hard_out
+        if hard_outliers:
+            candidates = hard_outliers
             flag_type = "hard"
         else:
             candidates = range(num_clients)
