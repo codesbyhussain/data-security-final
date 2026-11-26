@@ -60,31 +60,27 @@ def client_update(client_model, optimizer, train_loader, device, epochs=1):
             optimizer.step()
 
 
+
 # Coordinate-wise Trimmed Mean aggregation
 def trimmed_mean(client_models, benign_indices, trim_ratio=0.1):
     states = [client_models[i].state_dict() for i in benign_indices]
     n = len(states)
-    if n <= 2:
-        avg = {}
-        for key in states[0].keys():
-            stacked = torch.stack([s[key].float() for s in states], dim=0)
-            avg[key] = stacked.mean(dim=0).to(dtype=states[0][key].dtype)
-        return avg
-
-    k = max(0, round(n * trim_ratio))
+    k = round(n * trim_ratio) # number of values to remove
     avg = {}
-    for key in states[0].keys():
-        stacked = torch.stack([s[key].float() for s in states], dim=0)
-        orig_shape = stacked.shape[1:]
-        stacked_flat = stacked.view(n, -1)
-        if k > 0 and 2 * k < n:
-            sorted_flat, _ = torch.sort(stacked_flat, dim=0)
-            trimmed = sorted_flat[k:n - k]
-            mean_flat = trimmed.mean(dim=0)
-        else:
-            mean_flat = stacked_flat.mean(dim=0)
-        avg[key] = mean_flat.view(orig_shape).to(dtype=states[0][key].dtype)
+
+    for key in states[0]: # get the paremeter tensors for each client
+        parameters = []
+        for s in states:
+            parameters.append(s[key])
+        stacked_vals = torch.stack(parameters, dim=0) # stack into a grid
+
+        if k > 0 and 2 * k < n: # if none, skip this step, and 2*k must be less than n to avoid removing all weights.
+            sorted_vals = torch.sort(stacked_vals, dim=0).values
+            stacked_vals = sorted_vals[k:n-k]
+        avg[key] = stacked_vals.mean(dim=0)
+
     return avg
+
 
 
 # Server-side defense and aggregation
