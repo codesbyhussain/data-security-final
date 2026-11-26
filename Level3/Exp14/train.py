@@ -164,7 +164,7 @@ def detect_and_aggregate(global_model, client_models, current_round, trim_ratio=
     flagged_client = -1
     if current_round >= 2:
         hard_outliers = []
-        norm_thres = 3.0 * med_norm #note if med norm is 0, then all non zero norm clients will be "hard", but this is very unlikely
+        norm_thresh = 3.0 * med_norm #note if med norm is 0, then all non zero norm clients will be "hard", but this is very unlikely
 
         for i in range(num_clients):
             if norms[i] > norm_thresh or cos_scores[i] < 0:
