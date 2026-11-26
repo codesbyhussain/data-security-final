@@ -18,16 +18,16 @@ callCount = 0
 silentRounds = None
 
 
-def getLocalTrainedState(gState, localDs, dev, labelFlip=False):
-    '''This is needed for label/sign flipping attacks because they require local training. Our gaussian and scaling attacks do not retrain, but instead just attack the global parameters directly.
+def getLocalTrainedState(gState, localDs, device, labelFlip=False):
+    '''This is needed for label/sign flipping attacks because they require local training. Our gaussian and scaling attacks do notretrain, but instead just attack the global parameters directly.
     '''
-    # Detect model type from fc1 out-features 
+    # Detect model type from fc1 out-features
     if "fc1.weight" in gState and gState["fc1.weight"].shape[0] == 120:
-        net = LeNet5().to(dev)
+        client_model = LeNet5().to(device)
     elif "fc1.weight" in gState and gState["fc1.weight"].shape[0] == 128:
-        net = SimpleMLP().to(dev)
+        client_model = SimpleMLP().to(device)
     else:
-        net = LeNetWide32().to(dev)
+        client_model = LeNetWide32().to(device)
 
     client_model.load_state_dict(gState)
     optimizer = torch.optim.Adam(client_model.parameters(), lr=0.0005)
