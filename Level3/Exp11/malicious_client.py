@@ -76,8 +76,9 @@ def generate_malicious_update(client_model_state_dict, local_dataset, device):
         gState[k] = v.detach().clone()
 
     # If within silent period, behave benignly (lying low)
-    if atk == "label_flip":
-        res = getLocalTrainedState(gState, local_dataset, device, labelFlip=True)
+    if callCount <= silentRounds:
+        print(f"  [Simulated Malicious Client] In silent period (call {callCount}/{silentRounds}); behaving benignly.")
+        res = getLocalTrainedState(gState, local_dataset, device)
         return res
 
     atk = ATTACK_TYPE.lower()
@@ -118,9 +119,9 @@ def generate_malicious_update(client_model_state_dict, local_dataset, device):
             out[k] = gState[k] - delta
         return out
 
-    # 5. Label-flipping attack
+    # If within silent period, behave benignly (lying low)
     if atk == "label_flip":
-        trained = getLocalTrainedState(gState, local_dataset, device, labelFlip=True)
+        res = getLocalTrainedState(gState, local_dataset, device, labelFlip=True)
         return res
 
     raise ValueError(f"Unknown ATTACK_TYPE={atk!r}")
