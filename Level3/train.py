@@ -254,8 +254,9 @@ def federated_learning(n_clients=10, global_epochs=10, local_epochs=1, model_typ
         for idx in range(n_clients):
             if idx == malicious_client_id and round_num >= attack_start_round:
                 # === MALICIOUS CLIENT LOGIC HERE ===
-                g_state = global_model.state_dict()
-                mal_state = generate_malicious_update(g_state, client_datasets[idx], device)
+                mal_state = generate_malicious_update(
+                    global_model.state_dict(), client_datasets[idx], device
+                )
                 client_models[idx].load_state_dict(mal_state)
             else:
                 client_update(client_models[idx], optimizers[idx], client_loaders[idx], device, local_epochs)

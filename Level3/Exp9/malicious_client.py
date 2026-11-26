@@ -3,8 +3,8 @@ import random
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-
-from models import LeNetWide32, LeNet5, SimpleMLP
+import torch.nn as nn
+from models import LeNetWide32, LeNet5
 
 # Attack selection:
 # 'random', 'sign_flip', 'gaussian', 'scale', 'label_flip',  'benign'
@@ -29,25 +29,25 @@ def getLocalTrainedState(gState, localDs, dev, labelFlip=False):
     else:
         net = LeNetWide32().to(dev)
 
-    net.load_state_dict(gState)
-    opt = torch.optim.Adam(net.parameters(), lr=0.0005)
-    ldr = DataLoader(localDs, batch_size=50, shuffle=True)
+    client_model.load_state_dict(gState)
+    optimizer = torch.optim.Adam(client_model.parameters(), lr=0.0005)
+    train_loader = DataLoader(localDs, batch_size=50, shuffle=True)
 
-    net.train()
-    for batch in ldr:
-        xb = batch[0].to(dev)
-        yb = batch[1].to(dev)
+    # Client-side local training
+    client_model.train()
+    loss_fn = nn.CrossEntropyLoss()
+
+    for data, labels in train_loader:
+        data, labels = data.to(device), labels.to(device)
         if labelFlip:
-            yb = 9 - yb
-
-        out = net(xb)
-        loss = F.cross_entropy(out, yb)
+            labels = 9 - labels
+        optimizer.zero_grad()
+        output = client_model(data)
+        loss = loss_fn(output, labels)
         loss.backward()
-        opt.step()
-        opt.zero_grad()
+        optimizer.step()
 
-    trainedState = net.state_dict()
-    return trainedState
+    return client_model.state_dict()
 
 
 def generate_malicious_update(client_model_state_dict, local_dataset, device):
@@ -101,8 +101,8 @@ def generate_malicious_update(client_model_state_dict, local_dataset, device):
         out = {}
         for k, params in gState.items():
             scale = params.std().clamp(min=1e-3) * ATTACK_SCALE # min >0 here ensures that some attack is applied under all cases
-            noise = torch.randn_like(p) * scale
-            out[k] = p + noise
+            noise = torch.randn_like(params) * scale
+            out[k] = params + noise
         return out
 
     # 3. Scaling attack
