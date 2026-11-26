@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 import torch.nn as nn
-from models import LeNetWide32, LeNet5
+from models import LeNetWide32, LeNet5, SimpleMLP
 
 # Attack selection:
 # 'random', 'sign_flip', 'gaussian', 'scale', 'label_flip',  'benign'
