@@ -10,6 +10,20 @@ https://github.com/pytorch/tutorials/blob/main/beginner_source/introyt/modelsyt_
 '''
 
 
+class SimpleMLP(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.fc1 = nn.Linear(28 * 28, 128)
+        self.fc2 = nn.Linear(128, 64)
+        self.fc3 = nn.Linear(64, 10)
+
+    def forward(self, xb):
+        x = xb.view(-1, 28 * 28)
+        h1 = F.relu(self.fc1(x))
+        h2 = F.relu(self.fc2(h1))
+        out = self.fc3(h2)
+        return out
+
 class LeNet5(nn.Module):
     def __init__(self):
         super().__init__()
@@ -27,6 +41,23 @@ class LeNet5(nn.Module):
         return self.fc3(F.relu(self.fc2(F.relu(self.fc1(xb)))))
 
 
+class LeNetWide32Avg(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.conv1 = nn.Conv2d(1, 16, 5, padding=2)
+        self.conv2 = nn.Conv2d(16, 48, 5)
+        self.fc1 = nn.Linear(48 * 5 * 5, 256)
+        self.fc2 = nn.Linear(256, 128)
+        self.fc3 = nn.Linear(128, 10)
+
+    def forward(self, xb):
+        xb = xb.view(-1, 1, 28, 28)
+        xb = F.avg_pool2d(F.relu(self.conv1(xb)), 2) # Avg pool as per original LeNet paper
+        xb = F.avg_pool2d(F.relu(self.conv2(xb)), 2)
+        xb = xb.flatten(1)
+        return self.fc3(F.relu(self.fc2(F.relu(self.fc1(xb)))))
+
+
 class LeNetWide32(nn.Module):
     def __init__(self):
         super().__init__()
@@ -38,7 +69,7 @@ class LeNetWide32(nn.Module):
 
     def forward(self, xb):
         xb = xb.view(-1, 1, 28, 28)
-        xb = F.max_pool2d(F.relu(self.conv1(xb)), 2)  # Max pool as per the pytorch tutorial
+        xb = F.max_pool2d(F.relu(self.conv1(xb)), 2) # Max pool as per the pytorch tutorial
         xb = F.max_pool2d(F.relu(self.conv2(xb)), 2)
         xb = xb.flatten(1)
         return self.fc3(F.relu(self.fc2(F.relu(self.fc1(xb)))))
