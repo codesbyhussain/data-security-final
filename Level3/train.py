@@ -1,3 +1,4 @@
+import os
 import torch
 import torchvision
 import torchvision.transforms as transforms
@@ -247,9 +248,20 @@ def federated_learning(n_clients=10, global_epochs=10, local_epochs=1, model_typ
 
     best_accuracy = 0.0
     caught_rounds = []
+    start_epoch = 1
+    resume_checkpoint_path = 'checkpoint.pth'
+
+    if os.path.exists(resume_checkpoint_path):
+        checkpoint = torch.load(resume_checkpoint_path, map_location=device, weights_only=False)
+        global_model.load_state_dict(checkpoint['model_state_dict'])
+        start_epoch = checkpoint['epoch'] + 1
+        best_accuracy = checkpoint['best_accuracy']
+        for client in client_models:
+            client.load_state_dict(global_model.state_dict())
+        print(f"Resuming from round {start_epoch} (best_accuracy={best_accuracy:.2%})")
 
     print("Starting Level 3 Robust Federated Learning...")
-    for round_num in range(1, global_epochs + 1):
+    for round_num in range(start_epoch, global_epochs + 1):
         print(f"\nGlobal Round {round_num}/{global_epochs}")
 
         for idx in range(n_clients):
@@ -278,6 +290,12 @@ def federated_learning(n_clients=10, global_epochs=10, local_epochs=1, model_typ
             best_accuracy = test_accuracy
             torch.save(global_model.state_dict(), checkpoint_path)
             print(f"Saved best model with accuracy {best_accuracy:.2%} to {checkpoint_path}")
+
+        torch.save({
+            'epoch': round_num,
+            'model_state_dict': global_model.state_dict(),
+            'best_accuracy': best_accuracy,
+        }, resume_checkpoint_path)
 
     torch.save(global_model.state_dict(), 'robust_federated_model.pth')
     print(f"\nTraining completed. Malicious client caught in rounds: {caught_rounds}")

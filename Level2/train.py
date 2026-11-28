@@ -1,3 +1,4 @@
+import os
 import torch
 import torchvision
 import torchvision.transforms as transforms
@@ -121,9 +122,20 @@ def federated_learning(n_clients=10, global_epochs=10, local_epochs=1, model_typ
     optimizers = [torch.optim.Adam(model.parameters(), lr=0.0005) for model in client_models]
 
     best_accuracy = 0.0
+    start_epoch = 0
+    checkpoint_path = 'checkpoint.pth'
+
+    if os.path.exists(checkpoint_path):
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+        global_model.load_state_dict(checkpoint['model_state_dict'])
+        start_epoch = checkpoint['epoch'] + 1
+        best_accuracy = checkpoint['best_accuracy']
+        for client in client_models:
+            client.load_state_dict(global_model.state_dict())
+        print(f"Resuming from round {start_epoch + 1} (best_accuracy={best_accuracy:.2%})")
 
     # Federated Learning process
-    for global_epoch in range(global_epochs):
+    for global_epoch in range(start_epoch, global_epochs):
         print(f'Global Round {global_epoch + 1}/{global_epochs}')
 
         # Each client trains locally
@@ -141,6 +153,12 @@ def federated_learning(n_clients=10, global_epochs=10, local_epochs=1, model_typ
             best_accuracy = test_accuracy
             torch.save(global_model.state_dict(), 'best_model.pth')
             print(f'Saved best model with accuracy {best_accuracy:.2%} to best_model.pth')
+
+        torch.save({
+            'epoch': global_epoch,
+            'model_state_dict': global_model.state_dict(),
+            'best_accuracy': best_accuracy,
+        }, checkpoint_path)
 
     print(f"\nFederated training finished. Best Test Accuracy: {best_accuracy:.2%}")
 

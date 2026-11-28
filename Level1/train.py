@@ -1,3 +1,4 @@
+import os
 import torch
 import torchvision
 import torchvision.transforms as transforms
@@ -85,8 +86,18 @@ def main():
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
     best_accuracy = 0.0
+    start_epoch = 0
+    checkpoint_path = 'checkpoint.pth'
 
-    for epoch in range(epoches):
+    if os.path.exists(checkpoint_path):
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        start_epoch = checkpoint['epoch'] + 1
+        best_accuracy = checkpoint['best_accuracy']
+        print(f"Resuming from epoch {start_epoch} (best_accuracy={best_accuracy:.2%})")
+
+    for epoch in range(start_epoch, epoches):
         running_loss = 0.0
         running_acc = 0.0
 
@@ -138,6 +149,13 @@ def main():
             best_accuracy = val_accuracy
             torch.save(model.state_dict(), best_model_path)
             print("Saved best model with accuracy:", f"{best_accuracy:.2%}")
+
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'best_accuracy': best_accuracy,
+        }, checkpoint_path)
 
 
 if __name__ == '__main__':
