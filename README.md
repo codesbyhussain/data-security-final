@@ -23,11 +23,17 @@ Install the required packages:
 pip install -r requirements.txt
 ```
 
-Recommended Python version: Python 3.10+ with PyTorch 2.0+.
+Tested Environment (As per server provided to Group 04 [student@csc8370-g04]):
+- **System**: Linux, NVIDIA GeForce GTX 1080 Ti (Driver 580.178.04, CUDA 13.0)
+- **Python**: 3.12.3
+- **Packages**: `torch==2.7.0+cu126`, `torchvision==0.22.0+cu126`, `numpy==2.5.4`
 
 ---
 
 ## Instructions to Run
+
+To run inference only (without retraining), run `python test.py` directly inside `Level1`, `Level2`, or `Level3` using the pre-trained `.pth` checkpoint.
+
 
 ### Level 1 - Centralized Learning
 Navigate to `Level1`:
