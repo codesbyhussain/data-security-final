@@ -33,6 +33,10 @@ Tested Environment (As per server provided to Group 04 [student@csc8370-g04]):
 ## Instructions to Run
 
 To run inference only (without retraining), run `python test.py` directly inside `Level1`, `Level2`, or `Level3` using the pre-trained `.pth` checkpoint.
+Applies to all: To restart training always first run
+```bash
+rm -f checkpoint.pth
+```
 
 
 ### Level 1 - Centralized Learning
@@ -59,9 +63,11 @@ python test.py
 Navigate to `Level3`:
 ```bash
 cd Level3
+rm -f checkpoint.pth
 python train.py
 python test.py
 ```
 - `malicious_client.py`: Contains `generate_malicious_update(...)` isolated for Demo Day evaluation. Marked with `# === MALICIOUS CLIENT LOGIC HERE ===`.
 - `train.py`: Runs 10 rounds with 1 malicious client (Client 9 attacks starting from round 2). Anomaly detection filters the attacker, Trimmed Mean aggregates benign updates, and saves `best_model.pth` and `robust_federated_model.pth`.
 - `test.py`: Evaluates the robust global model on the test dataset.
+
